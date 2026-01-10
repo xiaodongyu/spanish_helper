@@ -72,6 +72,8 @@ Desktop.ini
 .env
 .env.local
 .env.*.local
+# Allow .env.example (template file with placeholders - safe to track)
+!.env.example
 
 # Logs
 *.log
@@ -80,4 +82,3 @@ logs/
 # Temporary files
 *.tmp
 *.temp
-

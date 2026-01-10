@@ -1,217 +1,234 @@
-# Spanish Helper - Duolinguo Radio Transcription
+# Spanish Helper
 
-A Python tool to transcribe Spanish audio files from Duolinguo radio episodes, with automatic speaker identification, proofreading, and story splitting capabilities.
+A Python toolkit for processing and learning from Spanish Duolingo radio episodes. Multiple modules work together to provide transcription, vocabulary extraction, and language learning features.
 
-## Features
+## Overview
 
-- 🎙️ **Audio Transcription**: Uses OpenAI Whisper for high-quality Spanish transcription
-- 👥 **Advanced Speaker Identification**: Combines audio-based and text-based methods for high accuracy
-  - **Audio-based diarization**: Uses pyannote.audio (HuggingFace) to identify speakers from voice characteristics
-  - **OpenAI API support**: Can use OpenAI API for transcription (more accurate), then apply diarization
-  - **Text-based patterns**: Detects speaker names from dialogue (e.g., "Soy María", "Me llamo Carlos")
-  - **Hybrid approach**: Combines both methods for best results
-  - **Episode structure awareness**: Uses fixed episode patterns to refine identification
-  - **Question detection**: Identifies when someone is being questioned (e.g., "Mateo, ¿por qué...")
-  - **Gender detection**: Uses gender information when available
-- ✍️ **Grammar Correction**: Automatic proofreading using LanguageTool (requires Java)
-- 📚 **Smart Episode Splitting**: Automatically splits transcripts into episodes
-  - **Pattern-based splitting**: Uses fixed episode patterns (intro, word review, dialog, closing) to detect boundaries
-  - Detects English hint words (section/radio numbers) as fallback
-  - Falls back to content-based splitting using program introductions
-- 💾 **Smart Processing**: Skips transcription if transcripts already exist
-- 📝 **Formatted Output**: Clean, readable transcripts with proper capitalization and spacing
+Spanish Helper consists of multiple independent modules that can be used together or separately:
 
-## Requirements
+- 🎙️ **transcribe_audio.py** - Transcribe Spanish audio files with speaker identification
+- 📚 *(More modules coming soon...)*
 
-- Python 3.8+
-- ffmpeg (for audio processing)
-- Java (optional, for grammar checking with LanguageTool)
-- **API Key for Audio Diarization** (choose one):
-  - **Option 1 (Recommended)**: OpenAI API key
-    - Get from: https://platform.openai.com/api-keys
-    - Set: `export OPENAI_API_KEY=your_key_here`
-    - Provides high-quality transcription + can combine with diarization
-  - **Option 2**: HuggingFace token (free)
-    - Get from: https://huggingface.co/settings/tokens
-    - Set: `export HUGGINGFACE_TOKEN=your_token_here`
-    - Requires accepting model terms (see setup guide)
+Each module is self-contained and can be used independently or combined with others.
 
-## Installation
+---
 
-### 1. Install Python dependencies
+## Modules
 
-```bash
-pip install -r requirements.txt
-```
+### 🎙️ transcribe_audio.py - Audio Transcription
 
-### 2. Install ffmpeg
+**Purpose:** Transcribe Spanish audio files from Duolingo radio episodes with automatic speaker identification, proofreading, and story splitting.
 
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt-get update
-sudo apt-get install ffmpeg
-```
+**Key Features:**
+- High-quality Spanish transcription using OpenAI Whisper
+- Advanced speaker identification (audio-based + text-based hybrid approach)
+- Automatic grammar correction using LanguageTool
+- Smart episode/story splitting
+- Skips re-transcription if transcripts already exist
 
-**macOS:**
-```bash
-brew install ffmpeg
-```
-
-**Windows:**
-Download from [ffmpeg.org](https://ffmpeg.org/download.html) or use:
-```bash
-choco install ffmpeg
-```
-
-**Using Conda:**
-```bash
-conda install -c conda-forge ffmpeg
-```
-
-### 3. Set up API Key for Audio Diarization (optional, but recommended)
-
-Choose **ONE** of the following options:
-
-#### Option A: OpenAI API (Easiest Setup)
-
-**Note**: OpenAI API provides high-quality transcription but **not speaker diarization**. 
-For speaker diarization, you'll still need HuggingFace (Option B) or rely on text-based identification.
-
-1. Get your OpenAI API key:
-   - Go to: https://platform.openai.com/api-keys
-   - Click "Create new secret key"
-   - Copy the key (starts with `sk-...`)
-
-2. Set the environment variable:
-   ```bash
-   export OPENAI_API_KEY=sk-your_key_here
-   ```
-
-3. **That's it!** No model terms to accept.
-
-**Note**: 
-- OpenAI API has usage costs (~$0.006 per minute). Check pricing: https://openai.com/pricing
-- For best speaker identification, combine with HuggingFace token (Option B)
-
-#### Option B: HuggingFace (Free, but requires setup)
-
-For improved speaker identification accuracy, you can enable audio-based speaker diarization:
-
-1. Create a HuggingFace account: https://huggingface.co/join
-2. Get your access token: https://huggingface.co/settings/tokens
-3. Accept the terms for pyannote models:
-   - https://huggingface.co/pyannote/speaker-diarization-3.1 (click "Agree and access repository")
-   - https://huggingface.co/pyannote/segmentation-3.0 (click "Agree and access repository")
-4. Set the token as an environment variable:
-   ```bash
-   export HUGGINGFACE_TOKEN=your_token_here
-   ```
-   Or add to your `~/.bashrc` or `~/.zshrc` for persistence.
-
-**Note**: Audio diarization will automatically be used if the token is available. Without it, the script falls back to text-based identification only.
-
-### 4. Install Java (optional, for grammar checking)
-
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt-get install default-jdk
-```
-
-**macOS:**
-```bash
-brew install openjdk
-```
-
-**Windows:**
-Download from [Adoptium](https://adoptium.net/) or use:
-```bash
-choco install openjdk
-```
-
-## Usage
-
-1. Place your `.m4a` audio files in the `Duolinguo/radios/` directory
-
-2. Run the transcription script:
+**Quick Start:**
 ```bash
 python transcribe_audio.py
 ```
 
-3. Transcripts will be saved in the `Duolinguo/radios/transcript/` folder with the format:
-   - `transcript_{audio_filename}_{story_number}.txt`
+**Documentation:**
+- **Quick Reference:** [notes/transcribe_audio_CONTEXT.md](notes/transcribe_audio_CONTEXT.md)
+- **Detailed Summary:** [notes/transcribe_audio_SUMMARY.md](notes/transcribe_audio_SUMMARY.md)
+- **Development History:** [notes/transcribe_audio_CHAT_HISTORY.md](notes/transcribe_audio_CHAT_HISTORY.md)
 
-## How It Works
+**Requirements:**
+- Python 3.8+
+- ffmpeg (for audio processing)
+- Java >= 17 (optional, for grammar checking)
+- OpenAI API key or HuggingFace token (optional, for speaker diarization)
 
-1. **Transcription**: Uses Whisper's base model to transcribe Spanish audio
-2. **Episode Detection**: 
-   - **Primary method**: Uses fixed episode patterns to detect boundaries:
-     - Introduction: Main speaker says hello and introduces theme/guest
-     - Word review: "Pero primero, estas son algunas palabras..." (marks start of dialog)
-     - Closing: "Gracias por escuchar... Hasta pronto." (marks end of episode)
-   - **Fallback methods**: 
-     - Detects English hint words (e.g., "section 1", "radio 2")
-     - Splits based on program introduction patterns
-3. **Speaker Identification** (Hybrid Approach):
-   - **Audio-based diarization** (if HuggingFace token provided):
-     - Uses pyannote.audio to separate speakers by voice characteristics
-     - Aligns speaker segments with transcript using word-level timestamps
-     - Provides accurate speaker identification even when text patterns are unclear
-   - **OpenAI API transcription** (if OpenAI API key provided):
-     - Uses OpenAI's Whisper API for high-quality transcription
-     - More accurate than local Whisper model
-     - Still uses text-based or HuggingFace diarization for speaker identification
-   - **Text-based identification** (always used, primary method if no audio diarization):
-     - Uses episode structure to identify speakers:
-       - All text before word review = main speaker
-       - Word review section = main speaker
-       - Dialog section = alternates between main speaker and guest
-       - Closing = main speaker
-     - Detects questions directed at someone (e.g., "Mateo, ¿por qué..." → Mateo is NOT speaking)
-     - Uses gender information when available
-   - **Combined approach**: Merges audio and text results for best accuracy
-   - Labels sentences with speaker names (e.g., "[Sari]: Hola, ¿cómo estás?")
-4. **Proofreading**: Applies grammar corrections using LanguageTool (if Java is installed)
-5. **Output**: Saves each episode/story as a separate, formatted text file with speaker labels
+---
+
+## Project Requirements
+
+### Core Requirements (All Modules)
+- **Python:** 3.8+
+- **ffmpeg:** For audio processing (required by transcription module)
+
+### Optional Requirements (Module-Specific)
+- **Java >= 17:** For grammar checking (transcription module)
+- **API Keys:** 
+  - `OPENAI_API_KEY` - For OpenAI transcription/diarization (transcription module)
+  - `HUGGINGFACE_TOKEN` - For free speaker diarization (transcription module)
+
+### Installation
+
+1. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Install ffmpeg:**
+   ```bash
+   # Linux (Ubuntu/Debian)
+   sudo apt-get install ffmpeg
+   
+   # macOS
+   brew install ffmpeg
+   
+   # Windows
+   choco install ffmpeg
+   ```
+
+3. **Set up API keys (optional):**
+   See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions.
+
+4. **Install Java >= 17 (optional, for grammar checking):**
+   ```bash
+   # Linux (Ubuntu/Debian)
+   sudo apt-get install openjdk-17-jdk
+   
+   # macOS
+   brew install openjdk
+   ```
+
+---
 
 ## Project Structure
 
 ```
 spanish_helper/
 ├── Duolinguo/
-│   └── radios/          # Place your .m4a files here
-│       └── transcript/  # Transcripts are saved here
-├── transcribe_audio.py   # Main transcription script
-├── requirements.txt      # Python dependencies
-└── README.md            # This file
+│   └── radios/                  # Audio files directory
+│       └── transcript/          # Generated transcripts
+├── notes/                       # Module documentation
+│   ├── README.md               # Documentation organization guide
+│   ├── WORKFLOW_GUIDE.md       # Development workflow guide
+│   ├── {module}_SUMMARY.md     # Module summaries
+│   ├── {module}_CONTEXT.md     # Module quick references
+│   └── {module}_CHAT_HISTORY.md # Module development histories
+├── transcribe_audio.py          # Transcription module
+├── requirements.txt             # Python dependencies
+├── setup_tokens.sh              # Token setup helper
+├── README.md                    # This file (project overview)
+├── SETUP_GUIDE.md               # Setup instructions
+├── API_COMPARISON.md            # API comparison guide
+└── LICENSE                      # MIT License
 ```
 
-## Notes
+---
 
-- The script automatically checks for existing transcripts and skips transcription if found
-- Whisper model is only loaded when transcription is needed
-- If Java is not installed, the script will continue without grammar correction
-- Transcripts are formatted with proper sentence capitalization and spacing
+## Quick Start
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   sudo apt-get install ffmpeg  # or equivalent for your OS
+   ```
+
+2. **Set up API keys (optional but recommended):**
+   ```bash
+   # See SETUP_GUIDE.md for detailed instructions
+   export OPENAI_API_KEY=sk-...
+   export HUGGINGFACE_TOKEN=hf_...
+   ```
+
+3. **Use a module:**
+   ```bash
+   # Transcription module
+   python transcribe_audio.py
+   ```
+
+---
+
+## Documentation
+
+### Project-Level Documentation
+- **[README.md](README.md)** - Project overview (this file)
+- **[SETUP_GUIDE.md](SETUP_GUIDE.md)** - Detailed setup instructions
+- **[API_COMPARISON.md](API_COMPARISON.md)** - HuggingFace vs OpenAI comparison
+- **[notes/README.md](notes/README.md)** - Module documentation organization
+- **[notes/WORKFLOW_GUIDE.md](notes/WORKFLOW_GUIDE.md)** - Development workflow guide
+
+### Module-Specific Documentation
+Each module has its own documentation in the `notes/` directory:
+- `{module}_SUMMARY.md` - Comprehensive module summary
+- `{module}_CONTEXT.md` - Quick reference guide
+- `{module}_CHAT_HISTORY.md` - Development history
+
+**Current Modules:**
+- **transcribe_audio:** See [notes/transcribe_audio_CONTEXT.md](notes/transcribe_audio_CONTEXT.md)
+
+---
+
+## Adding New Modules
+
+When adding a new module to this project:
+
+1. **Start a new chat session** for the module (keeps histories separate)
+2. **Create module file** (e.g., `new_module.py`)
+3. **Develop module** in focused chat session
+4. **Export chat history** as `notes/{module}_CHAT_HISTORY.md`
+5. **Generate documentation:**
+   - `notes/{module}_SUMMARY.md` - Detailed summary
+   - `notes/{module}_CONTEXT.md` - Quick reference
+6. **Update this README.md** - Add module to "Modules" section
+7. **Update `notes/README.md`** - Add module to documentation list
+
+See [notes/WORKFLOW_GUIDE.md](notes/WORKFLOW_GUIDE.md) for detailed workflow instructions.
+
+---
 
 ## Troubleshooting
 
+### Common Issues
+
 **"No such file or directory: 'ffmpeg'"**
-- Install ffmpeg using the instructions above
+- Install ffmpeg using the installation instructions above
 
-**"No java install detected"**
-- Install Java for grammar checking, or the script will continue without it
+**"Java too old for LanguageTool"**
+- Install Java >= 17: `sudo apt-get install openjdk-17-jdk`
 
-**"pyannote.audio not available"**
-- Install with: `pip install pyannote.audio pyannote.core`
-- Note: Requires HuggingFace token for model access
+**"API key not found"**
+- Check environment variables: `echo $OPENAI_API_KEY`, `echo $HUGGINGFACE_TOKEN`
+- See [SETUP_GUIDE.md](SETUP_GUIDE.md) for setup instructions
 
-**"Speaker diarization failed"**
-- Check that your HuggingFace token is set correctly: `echo $HUGGINGFACE_TOKEN`
-- Verify you've accepted the terms for pyannote models on HuggingFace
-- The script will fall back to text-based identification if diarization fails
+**Module-specific issues:**
+- Check module-specific documentation in `notes/{module}_CONTEXT.md`
+- See module troubleshooting sections
 
-**Model download is slow**
-- The Whisper model (~139MB) downloads on first use. Subsequent runs are faster.
+---
+
+## Contributing
+
+This is a personal learning project. However, suggestions and improvements are welcome!
+
+### Development Workflow
+
+1. Each module should be developed in its own chat session
+2. Export chat history regularly during development
+3. Generate SUMMARY and CONTEXT files from chat history
+4. Update documentation when adding features
+
+See [notes/WORKFLOW_GUIDE.md](notes/WORKFLOW_GUIDE.md) for detailed guidelines.
+
+---
 
 ## License
 
 MIT License - feel free to use and modify as needed.
+
+---
+
+## Project Status
+
+**Current Version:** Multi-module architecture (WIP)
+
+**Modules:**
+- ✅ `transcribe_audio.py` - Stable and feature-complete
+- 🔜 More modules coming soon...
+
+**Future Modules (Ideas):**
+- Vocabulary extractor from transcripts
+- Quiz generator from vocabulary
+- Word frequency analysis
+- Grammar pattern extraction
+
+---
+
+**Last Updated:** 2026-01-09

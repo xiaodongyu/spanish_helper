@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import whisper
 import language_tool_python
+import subprocess
 
 # Audio-based speaker diarization (optional)
 try:
@@ -42,7 +43,9 @@ def proofread_spanish(text, tool):
         for match in reversed(matches):
             if match.replacements:
                 start = match.offset
-                end = match.offset + match.errorLength
+                # Handle both old (errorLength) and new (error_length) attribute names
+                error_length = getattr(match, 'error_length', getattr(match, 'errorLength', 0))
+                end = match.offset + error_length
                 corrected_text = corrected_text[:start] + match.replacements[0] + corrected_text[end:]
         
         return corrected_text
@@ -110,19 +113,73 @@ def split_by_english_hints(text, hints):
     
     return stories if stories else [text]
 
-def split_by_episode_patterns(text):
+def get_audio_duration(audio_path):
     """
-    Split transcript into episodes based on fixed patterns in Duolinguo radio episodes.
-    Each episode has:
-    1. Introduction: Main speaker says hello and introduces theme/guest
-    2. Word review: "Pero primero, estas son algunas palabras..." (before dialog)
-    3. Dialog: Conversation between main speaker and guest
-    4. Closing: "Gracias por escuchar... Hasta pronto."
+    Get audio duration in seconds using ffprobe.
+    Returns duration in seconds, or None if unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', 
+             '-of', 'default=noprint_wrappers=1:nokey=1', str(audio_path)],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            return float(result.stdout.strip())
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, ValueError, FileNotFoundError):
+        pass
+    return None
+
+def split_by_episode_patterns(text, audio_path=None, speaker_segments=None, audio_duration=None):
+    """
+    Split transcript into episodes based on multiple heuristics:
+    1. Pattern-based: Fixed patterns in Duolinguo radio episodes (intros/closings)
+    2. Duration-based: Each episode is roughly 2.5-3 minutes (150-180 seconds)
+    3. Speaker-based: Adjacent episodes have different speaker sets
+    
+    Args:
+        text: Full transcript text
+        audio_path: Path to audio file (for duration calculation)
+        speaker_segments: List of (start_time, end_time, speaker_id, text) tuples from audio diarization
+        audio_duration: Audio duration in seconds (if known)
     
     Returns:
         List of episode texts
     """
     episodes = []
+    
+    # Get audio duration if not provided
+    if audio_duration is None and audio_path and audio_path.exists():
+        audio_duration = get_audio_duration(audio_path)
+    
+    # Calculate expected episode duration (2.5-3 minutes = 150-180 seconds)
+    MIN_EPISODE_DURATION = 120  # 2 minutes - minimum expected (merge if shorter)
+    TARGET_EPISODE_DURATION = 165  # ~2.75 minutes - target
+    MAX_EPISODE_DURATION = 210  # 3.5 minutes - maximum acceptable before splitting
+    SPLIT_EPISODE_DURATION = 240  # 4 minutes - definitely split if longer
+    
+    # If we have audio duration, calculate text-to-time ratio
+    # Estimate: average speaking rate ~150 words per minute, ~10 chars per word = ~1500 chars/min
+    chars_per_second = None
+    if audio_duration and len(text) > 0:
+        chars_per_second = len(text) / audio_duration
+        # Estimate duration for each character position
+        estimated_chars_per_episode = int(TARGET_EPISODE_DURATION * chars_per_second)
+        min_chars_per_episode = int(MIN_EPISODE_DURATION * chars_per_second)
+        max_chars_per_episode = int(MAX_EPISODE_DURATION * chars_per_second)
+        split_chars_per_episode = int(SPLIT_EPISODE_DURATION * chars_per_second)
+    else:
+        # Fallback: use rough estimates based on typical transcript length
+        estimated_chars_per_episode = 2000  # Rough estimate for 2.5-3 min episode
+        min_chars_per_episode = 1500
+        max_chars_per_episode = 3000
+        split_chars_per_episode = 3500
+        chars_per_second = None  # Not available for time-based calculations
+    
+    # Step 1: Find initial split points using patterns
+    split_points = [0]  # Start with beginning
     
     # Pattern for episode closing (marks end of episode)
     closing_patterns = [
@@ -132,24 +189,16 @@ def split_by_episode_patterns(text):
         r'¡Ah! Gracias por escuchar[^.]*\.\s*Nos vemos pronto\.',
     ]
     
-    # Find all closing markers
-    split_points = [0]  # Start with beginning
-    
     for pattern in closing_patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
-            # Find the end of the closing sentence
             end_pos = match.end()
-            # Look for next sentence start or new episode intro
             next_text = text[end_pos:end_pos+200]
-            # Check if there's a new episode intro nearby
             if re.search(r'Hola.*bienvenida|Te doy.*bienvenida|Soy \w+ y', next_text, re.IGNORECASE):
                 split_points.append(end_pos)
-            else:
-                # Also split at closing if it's followed by substantial text
-                if len(text[end_pos:].strip()) > 100:
-                    split_points.append(end_pos)
+            elif len(text[end_pos:].strip()) > 100:
+                split_points.append(end_pos)
     
-    # Also look for episode introductions (new episode starts)
+    # Pattern for episode introductions (new episode starts)
     intro_patterns = [
         r'Hola, te doy la bienvenida a',
         r'¡Pu-pu-pu! Hola, te doy la bienvenida a',
@@ -163,9 +212,7 @@ def split_by_episode_patterns(text):
     for pattern in intro_patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
             pos = match.start()
-            # Only add if it's not at the very beginning and not already a split point
             if pos > 50:
-                # Check if this is far enough from existing split points
                 is_new_split = True
                 for existing_split in split_points:
                     if abs(pos - existing_split) < 100:
@@ -177,13 +224,394 @@ def split_by_episode_patterns(text):
     # Remove duplicates and sort
     split_points = sorted(set(split_points))
     
-    # Split the text into episodes
+    # Step 2: Extract speakers for each potential episode segment
+    # Use speaker segments if available to identify speaker changes
+    episode_speaker_sets = []
     for i in range(len(split_points)):
         start = split_points[i]
         end = split_points[i + 1] if i + 1 < len(split_points) else len(text)
+        episode_text = text[start:end]
+        
+        # Extract speaker names from this episode
+        episode_speakers = set(extract_speaker_names(episode_text))
+        episode_speaker_sets.append(episode_speakers)
+        
+        # If we have audio-based speaker segments, use them too
+        if speaker_segments:
+            # Estimate time range for this text segment
+            if chars_per_second:
+                start_time = start / chars_per_second
+                end_time = end / chars_per_second
+                # Find speakers in this time range
+                segment_speakers = set()
+                for seg_start, seg_end, speaker_id, seg_text in speaker_segments:
+                    if speaker_id and (start_time <= (seg_start + seg_end) / 2 <= end_time):
+                        segment_speakers.add(speaker_id)
+                if segment_speakers:
+                    episode_speakers.update(segment_speakers)
+    
+    # Step 3: Refine splits based on duration and speaker changes
+    # First pass: merge too-short segments
+    refined_splits = [split_points[0]]  # Start with first split (usually 0)
+    
+    i = 1
+    while i < len(split_points):
+        prev_start = refined_splits[-1]
+        current_start = split_points[i]
+        current_end = split_points[i + 1] if i + 1 < len(split_points) else len(text)
+        
+        # Calculate length of segment from previous split to current
+        segment_length = current_start - prev_start
+        
+        # If segment is too short, check if we should merge with next
+        if segment_length < min_chars_per_episode:
+            # Check next segment
+            if i + 1 < len(split_points):
+                next_start = split_points[i + 1]
+                next_end = split_points[i + 2] if i + 2 < len(split_points) else len(text)
+                next_segment_length = next_start - current_start
+                combined_length = next_end - prev_start
+                
+                # Get speakers for both segments
+                current_seg = text[prev_start:current_start]
+                next_seg = text[current_start:next_start]
+                current_speakers = set(extract_speaker_names(current_seg))
+                next_speakers = set(extract_speaker_names(next_seg))
+                speakers_overlap = len(current_speakers & next_speakers) > 0
+                
+                # Merge if: (1) speakers overlap (same episode split incorrectly), 
+                # or (2) combined length is still reasonable
+                if speakers_overlap or combined_length < max_chars_per_episode:
+                    # Skip current split, merge segments
+                    i += 1
+                    continue
+        
+        # Segment length is reasonable or shouldn't be merged, keep the split
+        refined_splits.append(current_start)
+        i += 1
+    
+    # Second pass: split too-long segments
+    final_splits = [refined_splits[0]]
+    i = 1
+    while i < len(refined_splits):
+        prev_start = final_splits[-1]
+        current_start = refined_splits[i]
+        current_end = refined_splits[i + 1] if i + 1 < len(refined_splits) else len(text)
+        
+        segment_length = current_end - prev_start
+        
+        # If segment is too long, try to find a good split point
+        # Use split_threshold for definitely splitting (4 minutes)
+        if segment_length > max_chars_per_episode:
+            segment_text = text[prev_start:current_end]
+            
+            # Determine how many splits we need (for very long episodes, split multiple times)
+            num_splits_needed = max(1, int(segment_length / max_chars_per_episode))
+            
+            # For very long episodes, be more aggressive in finding split points
+            best_split = None
+            best_score = 0
+            
+            # Determine search window based on segment length
+            # For very long episodes (>4 min), search a wider area
+            if segment_length > split_chars_per_episode:
+                # Very long episode - search broader area, focus on closing+intro patterns
+                search_start = prev_start + min_chars_per_episode
+                search_end = current_end - min_chars_per_episode
+                
+                # Priority 1: Look for closing pattern followed by intro pattern (clear episode boundary)
+                # This is the strongest indicator of two episodes mixed together
+                for closing_pattern in closing_patterns:
+                    for closing_match in re.finditer(closing_pattern, segment_text, re.IGNORECASE):
+                        closing_end = prev_start + closing_match.end()
+                        
+                        # Look for intro pattern within 500 chars after closing (new episode starts)
+                        next_text = text[closing_end:min(closing_end + 500, current_end)]
+                        for intro_pattern in intro_patterns:
+                            intro_match = re.search(intro_pattern, next_text, re.IGNORECASE)
+                            if intro_match:
+                                candidate = closing_end + intro_match.start()
+                                before_text = text[prev_start:candidate]
+                                after_text = text[candidate:current_end]
+                                
+                                before_speakers = set(extract_speaker_names(before_text))
+                                after_speakers = set(extract_speaker_names(after_text))
+                                speaker_diff = len(before_speakers & after_speakers) == 0
+                                
+                                before_len = len(before_text)
+                                after_len = len(after_text)
+                                len_ok = (min_chars_per_episode <= before_len <= max_chars_per_episode * 1.5 and
+                                         min_chars_per_episode <= after_len <= max_chars_per_episode * 1.5)
+                                
+                                # Very high score for closing+intro pattern (strongest indicator)
+                                score = (5 if True else 0) + (2 if speaker_diff else 0) + (2 if len_ok else 0)
+                                if score > best_score:
+                                    best_score = score
+                                    best_split = candidate
+                                    break
+                            if best_split:
+                                break
+                        if best_split:
+                            break
+                    if best_split:
+                        break
+                
+                # Priority 2: If no closing+intro found, look for intro patterns at target intervals
+                if not best_split:
+                    for split_idx in range(1, num_splits_needed + 1):
+                        ideal_split_pos = prev_start + int(split_idx * estimated_chars_per_episode)
+                        if ideal_split_pos >= current_end - min_chars_per_episode:
+                            break
+                        
+                        # Search around ideal position
+                        search_start_local = max(prev_start + min_chars_per_episode, ideal_split_pos - 800)
+                        search_end_local = min(current_end - min_chars_per_episode, ideal_split_pos + 800)
+                        
+                        # Check intro patterns first (higher priority)
+                        for pattern in intro_patterns:
+                            for match in re.finditer(pattern, text[search_start_local:search_end_local], re.IGNORECASE):
+                                candidate = search_start_local + match.start()
+                                before_text = text[prev_start:candidate]
+                                after_text = text[candidate:current_end]
+                                
+                                before_speakers = set(extract_speaker_names(before_text))
+                                after_speakers = set(extract_speaker_names(after_text))
+                                speaker_diff = len(before_speakers & after_speakers) == 0
+                                
+                                before_len = len(before_text)
+                                after_len = len(after_text)
+                                len_ok = (min_chars_per_episode <= before_len <= max_chars_per_episode * 1.4 and
+                                         min_chars_per_episode <= after_len <= max_chars_per_episode * 1.4)
+                                
+                                # Bonus for being close to ideal position
+                                pos_bonus = 1 if abs(candidate - ideal_split_pos) < 400 else 0
+                                score = (3 if speaker_diff else 0) + (2 if len_ok else 0) + pos_bonus
+                                if score > best_score:
+                                    best_score = score
+                                    best_split = candidate
+                                    break
+                            if best_split:
+                                break
+                        if best_split:
+                            break
+                
+                # Priority 3: Look for closing patterns followed by substantial new content
+                if not best_split:
+                    for pattern in closing_patterns:
+                        for match in re.finditer(pattern, segment_text, re.IGNORECASE):
+                            candidate = prev_start + match.end()
+                            # Check if there's substantial new content after closing
+                            after_text = text[candidate:current_end]
+                            if len(after_text.strip()) > min_chars_per_episode * 0.8:  # At least 80% of min length
+                                before_text = text[prev_start:candidate]
+                                before_len = len(before_text)
+                                after_len = len(after_text)
+                                
+                                # Check if lengths are reasonable
+                                if (min_chars_per_episode <= before_len <= max_chars_per_episode * 1.5 and
+                                    min_chars_per_episode <= after_len <= max_chars_per_episode * 1.5):
+                                    before_speakers = set(extract_speaker_names(before_text))
+                                    after_speakers = set(extract_speaker_names(after_text))
+                                    speaker_diff = len(before_speakers & after_speakers) == 0
+                                    
+                                    len_ok_local = (min_chars_per_episode <= before_len <= max_chars_per_episode * 1.5 and
+                                                   min_chars_per_episode <= after_len <= max_chars_per_episode * 1.5)
+                                    score = (4 if True else 0) + (2 if speaker_diff else 0) + (1 if len_ok_local else 0)
+                                    if score > best_score:
+                                        best_score = score
+                                        best_split = candidate
+            else:
+                # Moderately long episode - look around midpoint
+                mid_point = prev_start + segment_length // 2
+                search_start = max(prev_start + min_chars_per_episode, mid_point - 1000)
+                search_end = min(current_end - min_chars_per_episode, mid_point + 1000)
+                
+                # Priority 1: Closing + intro pattern
+                for closing_pattern in closing_patterns:
+                    for closing_match in re.finditer(closing_pattern, text[search_start:search_end], re.IGNORECASE):
+                        closing_end = search_start + closing_match.end()
+                        next_text = text[closing_end:min(closing_end + 500, search_end)]
+                        for intro_pattern in intro_patterns:
+                            intro_match = re.search(intro_pattern, next_text, re.IGNORECASE)
+                            if intro_match:
+                                candidate = closing_end + intro_match.start()
+                                before_text = text[prev_start:candidate]
+                                after_text = text[candidate:current_end]
+                                
+                                before_speakers = set(extract_speaker_names(before_text))
+                                after_speakers = set(extract_speaker_names(after_text))
+                                speaker_diff = len(before_speakers & after_speakers) == 0
+                                
+                                before_len = len(before_text)
+                                after_len = len(after_text)
+                                len_ok = (min_chars_per_episode <= before_len <= max_chars_per_episode * 1.3 and
+                                         min_chars_per_episode <= after_len <= max_chars_per_episode * 1.3)
+                                
+                                score = (5 if True else 0) + (2 if speaker_diff else 0) + (2 if len_ok else 0)
+                                if score > best_score:
+                                    best_score = score
+                                    best_split = candidate
+                                    break
+                            if best_split:
+                                break
+                        if best_split:
+                            break
+                    if best_split:
+                        break
+                
+                # Priority 2: Intro patterns
+                if not best_split:
+                    for pattern in intro_patterns:
+                        for match in re.finditer(pattern, text[search_start:search_end], re.IGNORECASE):
+                            candidate = search_start + match.start()
+                            before_text = text[prev_start:candidate]
+                            after_text = text[candidate:current_end]
+                            
+                            before_speakers = set(extract_speaker_names(before_text))
+                            after_speakers = set(extract_speaker_names(after_text))
+                            speaker_diff = len(before_speakers & after_speakers) == 0
+                            
+                            before_len = len(before_text)
+                            after_len = len(after_text)
+                            len_ok = (min_chars_per_episode <= before_len <= max_chars_per_episode * 1.2 and
+                                     min_chars_per_episode <= after_len <= max_chars_per_episode * 1.2)
+                            
+                            score = (3 if speaker_diff else 0) + (1 if len_ok else 0)
+                            if score > best_score:
+                                best_score = score
+                                best_split = candidate
+                
+                # Priority 3: Closing patterns
+                if not best_split:
+                    for pattern in closing_patterns:
+                        for match in re.finditer(pattern, text[search_start:search_end], re.IGNORECASE):
+                            candidate = search_start + match.end()
+                            before_text = text[prev_start:candidate]
+                            after_text = text[candidate:current_end]
+                            
+                            before_speakers = set(extract_speaker_names(before_text))
+                            after_speakers = set(extract_speaker_names(after_text))
+                            speaker_diff = len(before_speakers & after_speakers) == 0
+                            
+                            before_len = len(before_text)
+                            after_len = len(after_text)
+                            len_ok = (min_chars_per_episode <= before_len <= max_chars_per_episode * 1.2 and
+                                     min_chars_per_episode <= after_len <= max_chars_per_episode * 1.2)
+                            
+                            score = (2 if speaker_diff else 0) + (1 if len_ok else 0)
+                            if score > best_score:
+                                best_score = score
+                                best_split = candidate
+            
+            # For very long episodes (>5 minutes), if no pattern found, force split at midpoint
+            # Lower threshold: if episode is >5 minutes (split_chars_per_episode * 1.25) and no pattern found
+            if not best_split and segment_length > split_chars_per_episode * 1.25:
+                # Episode is extremely long (>5 minutes), force split at midpoint
+                # Look for any intro or closing pattern in the middle 40% (wider search)
+                mid_point = prev_start + segment_length // 2
+                search_start = max(prev_start + min_chars_per_episode, mid_point - int(segment_length * 0.2))
+                search_end = min(current_end - min_chars_per_episode, mid_point + int(segment_length * 0.2))
+                
+                # Try to find ANY intro pattern in this wider search area
+                for pattern in intro_patterns:
+                    for match in re.finditer(pattern, text[search_start:search_end], re.IGNORECASE):
+                        candidate = search_start + match.start()
+                        before_len = candidate - prev_start
+                        after_len = current_end - candidate
+                        
+                        # Accept split if both parts are at least minimum length
+                        # For very long episodes, be more lenient - allow splits even if one part is slightly shorter
+                        min_required = int(min_chars_per_episode * 0.8)  # Allow 80% of minimum
+                        if before_len >= min_required and after_len >= min_required:
+                            best_split = candidate
+                            best_score = 3  # Moderate score for forced split
+                            break
+                    if best_split:
+                        break
+                
+                # If still no pattern, split at exact midpoint as last resort
+                if not best_split:
+                    mid_point = prev_start + segment_length // 2
+                    before_len = mid_point - prev_start
+                    after_len = current_end - mid_point
+                    # Only force split if both parts are reasonable
+                    # For very long episodes, be more lenient
+                    min_required = int(min_chars_per_episode * 0.75)  # Allow 75% of minimum for forced splits
+                    if before_len >= min_required and after_len >= min_required:
+                                    # Find sentence boundary near midpoint
+                                    # Look for period, exclamation, or question mark near midpoint
+                                    for offset in range(-300, 301, 50):  # Check in 50-char increments, wider range
+                                        check_pos = mid_point + offset
+                                        if prev_start + min_required <= check_pos <= current_end - min_required:
+                                            # Find next sentence boundary after this position
+                                            text_around = text[max(check_pos - 150, prev_start):min(check_pos + 400, current_end)]
+                                            boundary_match = re.search(r'[.!?]+\s+', text_around)
+                                            if boundary_match:
+                                                candidate = max(check_pos - 150, prev_start) + boundary_match.end()
+                                                if prev_start + min_required <= candidate <= current_end - min_required:
+                                                    best_split = candidate
+                                                    best_score = 2  # Low score, but acceptable for forced split
+                                                    break
+                                            else:
+                                                # Find any punctuation or whitespace boundary
+                                                whitespace_match = re.search(r'\s{2,}|\n', text_around)
+                                                if whitespace_match:
+                                                    candidate = max(check_pos - 150, prev_start) + whitespace_match.end()
+                                                    if prev_start + min_required <= candidate <= current_end - min_required:
+                                                        best_split = candidate
+                                                        best_score = 1
+                                                        break
+                                                else:
+                                                    # Use the position itself if no boundary found (last resort)
+                                                    candidate = check_pos
+                                                    if prev_start + min_required <= candidate <= current_end - min_required:
+                                                        best_split = candidate
+                                                        best_score = 1
+                                                        break
+                                        if best_split:
+                                            break
+            
+            if best_split:
+                # Insert new split in refined_splits and restart processing from there
+                refined_splits.insert(i, best_split)
+                # Recalculate speaker sets (will be recalculated in next iteration)
+                # Continue from beginning of this loop to reprocess
+                i = 1
+                final_splits = [refined_splits[0]]
+                continue
+        
+        # Segment length is reasonable, keep the split
+        final_splits.append(current_start)
+        i += 1
+    
+    # Add final split point at text end
+    if final_splits[-1] != len(text):
+        final_splits.append(len(text))
+    
+    # Final pass: filter out splits that are too close
+    filtered_splits = [final_splits[0]]
+    for split in final_splits[1:]:
+        min_gap = min_chars_per_episode * 0.4  # At least 40% of min episode length
+        if split - filtered_splits[-1] >= min_gap:
+            filtered_splits.append(split)
+        elif split == len(text):
+            # Always include final split
+            if filtered_splits[-1] != len(text):
+                filtered_splits.append(len(text))
+        else:
+            # Merge: replace last split
+            filtered_splits[-1] = split
+    
+    # Ensure we end at text end
+    if filtered_splits[-1] != len(text):
+        filtered_splits.append(len(text))
+    
+    # Create episodes from final splits
+    for i in range(len(filtered_splits) - 1):
+        start = filtered_splits[i]
+        end = filtered_splits[i + 1]
         episode = text[start:end].strip()
         
-        # Only add if episode is substantial (at least 100 characters)
         if len(episode) > 100:
             episodes.append(episode)
     
@@ -292,7 +720,7 @@ def extract_speaker_names(text):
 def perform_speaker_diarization_openai(audio_path, openai_api_key=None):
     """
     Perform transcription and speaker diarization using OpenAI API.
-    Uses gpt-4o-transcribe-diarize model which provides both transcription and speaker labels.
+    Uses gpt-4o-transcribe-diarize-api-ev3 model which provides both transcription and speaker labels.
     
     Returns tuple: (transcript_text, labeled_segments)
     where labeled_segments is list of (start_time, end_time, speaker_id, text)
@@ -306,12 +734,14 @@ def perform_speaker_diarization_openai(audio_path, openai_api_key=None):
         # Open audio file
         with open(audio_path, 'rb') as audio_file:
             # Try to use gpt-4o-transcribe-diarize model (if available)
+            # This model provides both transcription and speaker diarization
             try:
                 transcript = client.audio.transcriptions.create(
                     model="gpt-4o-transcribe-diarize",
                     file=audio_file,
                     language="es",
-                    response_format="verbose_json"
+                    response_format="json",  # Use 'json' for gpt-4o-transcribe-diarize
+                    chunking_strategy="auto"  # Required for diarization models
                 )
             except Exception as e:
                 # Fallback to whisper-1 if gpt-4o-transcribe-diarize not available
@@ -328,21 +758,43 @@ def perform_speaker_diarization_openai(audio_path, openai_api_key=None):
         full_text = ""
         labeled_segments = []
         
-        if hasattr(transcript, 'segments'):
+        # Handle different response formats
+        if hasattr(transcript, 'segments') and transcript.segments:
+            # verbose_json format (whisper-1)
             for segment in transcript.segments:
-                start = segment.get('start', 0)
-                end = segment.get('end', 0)
-                text = segment.get('text', '').strip()
-                speaker = segment.get('speaker', None)  # Available in gpt-4o-transcribe-diarize
+                # Handle both dict-like and object-like segments
+                if isinstance(segment, dict):
+                    start = segment.get('start', 0)
+                    end = segment.get('end', 0)
+                    text = segment.get('text', '').strip()
+                    speaker = segment.get('speaker', None)
+                else:
+                    # Object with attributes
+                    start = getattr(segment, 'start', 0)
+                    end = getattr(segment, 'end', 0)
+                    text = getattr(segment, 'text', '').strip()
+                    speaker = getattr(segment, 'speaker', None)
                 
                 if text:
                     full_text += text + " "
                     labeled_segments.append((start, end, speaker, text))
         elif hasattr(transcript, 'text'):
-            # Fallback: just text, no segments
-            full_text = transcript.text
+            # Simple text format
+            full_text = transcript.text if isinstance(transcript.text, str) else getattr(transcript, 'text', '')
+        elif isinstance(transcript, dict):
+            # Dictionary response (json format)
+            full_text = transcript.get('text', '')
+            if 'segments' in transcript:
+                for segment in transcript['segments']:
+                    start = segment.get('start', 0)
+                    end = segment.get('end', 0)
+                    text = segment.get('text', '').strip()
+                    speaker = segment.get('speaker', None)
+                    if text:
+                        full_text += text + " "
+                        labeled_segments.append((start, end, speaker, text))
         
-        return full_text.strip(), labeled_segments
+        return full_text.strip(), labeled_segments if labeled_segments else None
     except Exception as e:
         print(f"   ⚠️  OpenAI API transcription failed: {str(e)}")
         return None, None
@@ -358,10 +810,16 @@ def perform_speaker_diarization(audio_path, hf_token=None):
     try:
         # Load the pre-trained speaker diarization pipeline
         # Using pyannote/speaker-diarization-3.1 model
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token
-        )
+        if hf_token:
+            # Use 'token' parameter (current API)
+            pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                token=hf_token
+            )
+        else:
+            pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1"
+            )
         
         # Run diarization
         diarization = pipeline(str(audio_path))
@@ -962,44 +1420,84 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
         print("   Proofreading...")
         corrected_transcript = proofread_spanish(transcript, grammar_tool)
         
-        # Split into episodes using pattern-based approach (not speaker-based)
-        print("   Detecting episode boundaries using patterns...")
-        episodes = split_by_episode_patterns(corrected_transcript)
-        if episodes:
-            print(f"   ✅ Split into {len(episodes)} episode(s) based on episode patterns")
-        else:
-            # Fallback to content-based splitting
-            print("   Pattern-based splitting not applicable, using content-based splitting...")
-            episodes = split_by_content(corrected_transcript)
-        
-        # Extract speaker names from each episode for better identification
-        print("   Identifying speakers in each episode...")
+        # Extract speaker names from transcript for better identification
+        print("   Identifying speakers in transcript...")
         all_speaker_names = extract_speaker_names(corrected_transcript)
         if all_speaker_names:
             print(f"   ✅ Detected {len(all_speaker_names)} speaker(s) overall: {', '.join(all_speaker_names[:5])}{'...' if len(all_speaker_names) > 5 else ''}")
         else:
             print("   ⚠️  No speaker names detected, using generic labels")
         
-        # Perform audio-based speaker diarization on full transcript (once)
+        # Perform audio-based speaker diarization on full transcript FIRST (before splitting)
+        # This provides speaker segments that help with episode boundary detection
+        speaker_segments = None
+        audio_duration = None
         full_transcript_labeled = None
+        
         if has_audio_for_diarization:
+            # Get audio duration
+            audio_duration = get_audio_duration(audio_path)
+            if audio_duration:
+                print(f"   🎵 Audio duration: {audio_duration:.1f} seconds ({audio_duration/60:.1f} minutes)")
+            
             # Try OpenAI API first (if available), then HuggingFace, then text-only
-            full_transcript_labeled = identify_speakers_with_audio(
-                corrected_transcript, 
-                all_speaker_names, 
-                audio_path, 
-                model, 
-                hf_token,
-                openai_api_key
-            )
-            if full_transcript_labeled:
-                print("   ✅ Audio diarization completed, will be combined with text-based identification")
-            # If OpenAI was used, update transcript
+            openai_transcript, openai_segments = None, None
             if openai_api_key and OPENAI_API_AVAILABLE:
-                # Check if OpenAI provided a better transcript
-                openai_transcript, _ = perform_speaker_diarization_openai(audio_path, openai_api_key)
-                if openai_transcript:
+                print("   🎤 Using OpenAI API for transcription with speaker diarization...")
+                openai_transcript, openai_segments = perform_speaker_diarization_openai(audio_path, openai_api_key)
+                if openai_transcript and openai_segments:
+                    print("   ✅ OpenAI API transcription with speaker diarization successful")
+                    print(f"   ✅ OpenAI API diarization: {len(set(s[2] for s in openai_segments if s[2]))} speaker(s) detected")
+                    speaker_segments = openai_segments
                     corrected_transcript = proofread_spanish(openai_transcript, grammar_tool)
+                elif openai_transcript:
+                    print("   ✅ OpenAI API transcription successful (no speaker labels)")
+                    corrected_transcript = proofread_spanish(openai_transcript, grammar_tool)
+            
+            # Fallback to HuggingFace/pyannote if OpenAI didn't provide segments
+            if not speaker_segments and hf_token and DIARIZATION_AVAILABLE and model:
+                print("   🎤 Performing audio-based speaker diarization (HuggingFace)...")
+                diarization_segments = perform_speaker_diarization(audio_path, hf_token)
+                if diarization_segments:
+                    # Convert to (start, end, speaker_id, text) format
+                    speaker_segments = [(start, end, speaker, None) for start, end, speaker in diarization_segments]
+                    print(f"   ✅ Audio diarization successful: {len(set(s[2] for s in speaker_segments if s[2]))} speaker(s) detected")
+            
+            # Get full transcript labels for later use
+            if all_speaker_names:
+                full_transcript_labeled = identify_speakers_with_audio(
+                    corrected_transcript, 
+                    all_speaker_names, 
+                    audio_path, 
+                    model, 
+                    hf_token,
+                    openai_api_key
+                )
+                if full_transcript_labeled:
+                    print("   ✅ Full transcript labeled with speakers")
+        
+        # Split into episodes using improved heuristic-based approach
+        # Uses pattern-based, duration-based, and speaker-based heuristics
+        print("   Detecting episode boundaries using patterns, duration, and speaker changes...")
+        episodes = split_by_episode_patterns(
+            corrected_transcript,
+            audio_path=audio_path if has_audio_for_diarization else None,
+            speaker_segments=speaker_segments,
+            audio_duration=audio_duration
+        )
+        if episodes:
+            print(f"   ✅ Split into {len(episodes)} episode(s) using improved heuristics")
+            
+            # Report estimated durations if available
+            if audio_duration:
+                chars_per_second_calc = len(corrected_transcript) / audio_duration
+                for i, episode in enumerate(episodes, 1):
+                    ep_duration = len(episode) / chars_per_second_calc
+                    print(f"      Episode {i}: ~{ep_duration:.1f} seconds ({ep_duration/60:.1f} minutes)")
+        else:
+            # Fallback to content-based splitting
+            print("   Pattern-based splitting not applicable, using content-based splitting...")
+            episodes = split_by_content(corrected_transcript)
         
         # Process each episode: identify speakers and format
         stories = []
@@ -1084,6 +1582,29 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
             
             saved_files.append(output_path)
             print(f"   ✅ Saved story {i}: {output_path.name}")
+            
+            # Prepare content for combined file
+            # Add episode separator and content
+            episode_header = f"\n\n{separator}\nEPISODE {i}\n{separator}\n\n"
+            combined_content_parts.append(episode_header + formatted_story)
+        
+        # Save combined transcript file with all episodes
+        combined_filename = f"transcript_{prefix}_combined.txt"
+        combined_path = transcript_dir / combined_filename
+        with open(combined_path, 'w', encoding='utf-8') as f:
+            # Write header
+            f.write(f"Complete Transcript: {audio_path.name}\n")
+            f.write(f"Total Episodes: {len(stories)}\n")
+            f.write(separator + "\n\n")
+            
+            # Write all episodes with separators
+            f.write("\n".join(combined_content_parts))
+            
+            # Write footer
+            f.write(f"\n\n{separator}\nEND OF TRANSCRIPT\n{separator}\n")
+        
+        saved_files.append(combined_path)
+        print(f"   ✅ Saved combined transcript: {combined_filename}")
         
         if first_story_preview:
             print(f"   📝 Preview of story 1:\n{first_story_preview[:200]}...\n")

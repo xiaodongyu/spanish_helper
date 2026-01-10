@@ -30,12 +30,42 @@ HuggingFace requires you to accept terms for the models we use. You need to acce
 #### Model 1: pyannote/speaker-diarization-3.1
 1. Go to: https://huggingface.co/pyannote/speaker-diarization-3.1
 2. Click **"Agree and access repository"** button
-3. Accept the terms
+3. Fill in the form (if required):
+   - **Company/University:** Enter "Personal", "Individual", or "N/A" (for solo developers)
+   - **Website:** 
+     - If you have a GitHub repo: `https://github.com/yourusername/spanish_helper`
+     - If you only have a GitHub profile: `https://github.com/yourusername`
+     - If neither: `N/A` or leave blank if allowed
+4. Accept the terms and submit
 
 #### Model 2: pyannote/segmentation-3.0
 1. Go to: https://huggingface.co/pyannote/segmentation-3.0
 2. Click **"Agree and access repository"** button
-3. Accept the terms
+3. Fill in the form (if required):
+   - **Company/University:** Enter "Personal", "Individual", or "N/A" (same as above)
+   - **Website:** Use the same value as Model 1 (for consistency)
+4. Accept the terms and submit
+
+**Note:** These form fields are just for HuggingFace's records. Using "Personal" and your GitHub repo (or profile) is perfectly acceptable for solo developers.
+
+### Step 4: Verify Model Access
+
+After accepting terms for both models, you can verify access:
+
+1. **Check on model pages:**
+   - Visit: https://huggingface.co/pyannote/speaker-diarization-3.1
+   - If you have access, you'll see the repository content (Files tab, model files)
+   - If access is granted, you won't see the "Agree and access repository" button anymore
+   - Repeat for: https://huggingface.co/pyannote/segmentation-3.0
+
+2. **Visual confirmation:**
+   - ✅ **Access granted:** You can see the Files tab, browse model files, download models
+   - ❌ **No access:** You'll still see the "Agree and access repository" button
+
+3. **Test with script (final verification):**
+   - Once you set your `HUGGINGFACE_TOKEN`, run the script
+   - If access is correct, the script will successfully load the models
+   - If access is missing, you'll get an "access denied" error
 
 ✅ **Done with HuggingFace!** Now let's set up OpenAI.
 
