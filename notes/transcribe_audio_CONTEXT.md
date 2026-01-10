@@ -25,7 +25,8 @@ spanish_helper/
 ├── Duolinguo/radios/
 │   ├── *.m4a                          # Input audio
 │   └── transcript/                    # Output transcripts
-├── transcribe_audio.py                # This module (866 lines)
+├── transcribe_audio.py                # This module (main transcription script)
+├── combine_transcripts.py             # Combines individual transcripts into single file
 ├── requirements.txt                   # Dependencies (includes transcription deps)
 ├── notes/
 │   ├── transcribe_audio_CHAT_HISTORY.md  # Full chat history (41,831 lines)
@@ -65,7 +66,14 @@ spanish_helper/
 - **Question detection:** "Mateo, ¿por qué..." → Mateo is NOT speaking
 
 ### 3. Episode/Story Splitting
-- **Primary:** Pattern-based (fixed episode structures)
+- **Primary:** Pattern-based (fixed episode structures) with duration heuristics
+- **Duration heuristics:** 
+  - Target: ~2.5-3 minutes per episode (Duolingo radio format)
+  - Min length: ~1.5 minutes (merge if shorter)
+  - Max length: ~4 minutes (split if longer)
+  - Uses audio duration via `ffprobe` for accurate calculations
+- **Speaker-based merging:** Merges segments with overlapping speakers (same episode split incorrectly)
+- **Aggressive splitting:** Automatically splits very long episodes (>4 min) using closing+intro patterns
 - **Fallback 1:** English hint words ("section 1", "radio 2")
 - **Fallback 2:** Content-based (program introductions)
 
@@ -73,6 +81,7 @@ spanish_helper/
 - Checks for existing transcripts before transcribing
 - Reuses existing files to skip transcription
 - Lazy loading: Only loads Whisper model when needed
+- Combined transcript output: Creates single `transcript_combined.txt` file with all episodes and clear separators
 
 ---
 
@@ -109,6 +118,12 @@ export HUGGINGFACE_TOKEN=hf_...       # Get from huggingface.co/settings/tokens
 python3 transcribe_audio.py
 ```
 
+### Combine Individual Transcripts
+```bash
+# After transcription, combine all episode files into one file
+python3 combine_transcripts.py
+```
+
 ### Check Token Setup
 ```bash
 ./setup_tokens.sh
@@ -139,6 +154,7 @@ echo $HUGGINGFACE_TOKEN  # Check if set
 - `read_existing_transcripts()` - Read and combine existing files
 - `proofread_spanish()` - Grammar correction
 - `extract_speaker_names()` - Extract names from dialogue
+- `get_audio_duration()` - Get audio duration using `ffprobe` for episode length calculations
 
 ---
 
@@ -166,6 +182,11 @@ echo $HUGGINGFACE_TOKEN  # Check if set
    - **Impact:** Lower speaker identification accuracy (no audio diarization)
    - **Fix:** Set `HUGGINGFACE_TOKEN` (free) or `OPENAI_API_KEY` (paid)
 
+4. **Episode splitting accuracy** - May occasionally split one episode into two or merge two episodes
+   - **Impact:** Minor - users can read through combined transcript to follow content
+   - **Status:** Improved with duration heuristics and speaker detection (2026-01-09)
+   - **Mitigation:** Combined transcript file makes it easy to read across episode boundaries
+
 ---
 
 ## Recent Development
@@ -178,8 +199,27 @@ echo $HUGGINGFACE_TOKEN  # Check if set
 5. Added smart processing → Existing file reuse
 6. Added comprehensive documentation → Setup guides
 
+### 2026-01-09 Updates (Today)
+1. **Bug fixes:**
+   - Fixed `audio_file` not being reset before fallback transcription (`audio_file.seek(0)`)
+   - Fixed `separator` and `combined_content_parts` initialization issue
+   - Fixed incorrect `combined_length` calculation in episode splitting (was including third segment)
+2. **Improved episode splitting:**
+   - Added duration heuristics using `ffprobe` for accurate audio duration calculation
+   - Implemented min/max/target episode length constraints (1.5/4/2.5-3 minutes)
+   - Enhanced speaker-based merging (merges segments with overlapping speakers)
+   - Added aggressive splitting for very long episodes (>4 minutes)
+3. **New feature - transcript combination:**
+   - Created `combine_transcripts.py` script to merge individual episode files
+   - Outputs single `transcript_combined.txt` with clear episode separators
+   - Removes headers from individual files for cleaner output
+4. **Security improvements:**
+   - Removed actual API tokens from documentation files
+   - Replaced with placeholders in all commits (history cleaned via `git filter-branch`)
+
 ### Current Implementation
-- **File size:** transcribe_audio.py is 866 lines (complex, feature-rich)
+- **File size:** transcribe_audio.py (complex, feature-rich with duration heuristics)
+- **New script:** combine_transcripts.py (transcript combination utility)
 - **Dependencies:** All major features implemented
 - **Documentation:** Comprehensive (README, SETUP_GUIDE, API_COMPARISON)
 
@@ -211,5 +251,5 @@ echo $HUGGINGFACE_TOKEN  # Check if set
 
 ---
 
-**Last Updated:** 2026-01-08  
+**Last Updated:** 2026-01-09  
 **Use Case:** Personal Spanish learning tool for Duolingo radio transcripts

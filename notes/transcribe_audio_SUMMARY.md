@@ -37,13 +37,21 @@ A Python tool for transcribing Spanish audio files from Duolingo radio episodes 
 ### Phase 3: Story/Episode Splitting
 - **Added:** Automatic splitting of long transcripts into multiple stories
 - **Methods:**
-  1. **Primary:** Pattern-based detection using fixed episode structures
+  1. **Primary:** Pattern-based detection using fixed episode structures with duration heuristics
      - Introduction patterns
      - Word review sections ("Pero primero, estas son algunas palabras...")
      - Closing patterns ("Gracias por escuchar... Hasta pronto.")
+     - **Duration heuristics (added 2026-01-09):**
+       - Target episode length: ~2.5-3 minutes (Duolingo radio format)
+       - Minimum length: ~1.5 minutes (merge if shorter)
+       - Maximum length: ~4 minutes (split if longer)
+       - Uses `ffprobe` to calculate actual audio duration
+       - Speaker-based merging: Merges segments with overlapping speakers (same episode split incorrectly)
+       - Aggressive splitting: Automatically splits very long episodes (>4 min) using closing+intro patterns
   2. **Fallback:** English hint words detection (e.g., "section 1", "radio 2")
   3. **Secondary:** Content-based splitting using program introductions
 - **Output format:** `transcript_{prefix}_{number}.txt` (e.g., `transcript_audio_1.txt`, `transcript_audio_2.txt`)
+- **Combined output (added 2026-01-09):** `transcript_combined.txt` - Single file with all episodes and clear separators (via `combine_transcripts.py`)
 
 ### Phase 4: Speaker Identification (Hybrid Approach)
 - **Text-based identification:**
@@ -74,6 +82,34 @@ A Python tool for transcribing Spanish audio files from Duolingo radio episodes 
 - **Transcript directory:**
   - Output saved to `Duolinguo/radios/transcript/` subfolder
   - Organized file structure
+  - Individual episode files: `transcript_{prefix}_{number}.txt`
+  - Combined transcript file: `transcript_combined.txt` (created by `combine_transcripts.py`)
+
+### Phase 6: Bug Fixes & Improvements (2026-01-09)
+- **Critical bug fixes:**
+  1. Fixed `audio_file` not being reset before fallback transcription
+     - Issue: File pointer at EOF after failed `gpt-4o-transcribe-diarize` attempt
+     - Fix: Added `audio_file.seek(0)` before fallback `whisper-1` transcription
+  2. Fixed `separator` and `combined_content_parts` initialization
+     - Issue: Variables used before initialization causing `NameError`
+     - Fix: Initialized variables before the story-saving loop
+  3. Fixed incorrect `combined_length` calculation in episode splitting
+     - Issue: Was including third segment when calculating merge length
+     - Fix: Changed to `combined_length = next_start - prev_start` (only current + next segment)
+- **Enhanced episode splitting:**
+  - Added `get_audio_duration()` function using `ffprobe` for accurate duration calculation
+  - Implemented duration-based heuristics (min/max/target episode lengths)
+  - Improved speaker-based merging logic
+  - Added aggressive splitting for very long episodes
+- **New utility script:**
+  - Created `combine_transcripts.py` to merge individual episode files
+  - Outputs single `transcript_combined.txt` with clear episode separators
+  - Removes headers from individual files for cleaner output
+  - Makes it easier to read all episodes in one file
+- **Security improvements:**
+  - Removed actual API tokens from documentation files
+  - Replaced with placeholders (`hf_your_token_here`, `sk-your_key_here`)
+  - Cleaned git history using `git filter-branch` to remove tokens from all commits
 
 ---
 
@@ -110,6 +146,7 @@ spanish_helper/
 │   ├── transcribe_audio_SUMMARY.md       # This file (detailed summary)
 │   └── transcribe_audio_CONTEXT.md       # Quick reference
 ├── transcribe_audio.py              # Main script
+├── combine_transcripts.py           # Combine individual transcripts into single file
 ├── requirements.txt                 # Python dependencies
 ├── setup_tokens.sh                  # Token setup helper
 ├── README.md                        # User documentation
@@ -132,15 +169,22 @@ spanish_helper/
 - **Reasoning:** Each method has strengths; combining provides best accuracy
 
 ### 3. Episode Splitting Methodology
-- **Primary:** Pattern-based (fixed episode structures)
+- **Primary:** Pattern-based (fixed episode structures) with duration heuristics
+- **Duration constraints (2026-01-09):**
+  - Target: 2.5-3 minutes per episode (Duolingo radio format)
+  - Min: 1.5 minutes (merge if shorter, speaker overlap detection)
+  - Max: 4 minutes (split if longer, aggressive splitting for very long episodes)
+  - Uses `ffprobe` for accurate audio duration calculation
+- **Speaker-based merging:** Merges segments with overlapping speakers (same episode split incorrectly)
 - **Fallback:** English hint words
 - **Secondary:** Content-based splitting
-- **Reasoning:** Duolingo radio has consistent structure; patterns are most reliable
+- **Reasoning:** Duolingo radio has consistent structure and duration; patterns + duration heuristics provide best accuracy
 
 ### 4. File Organization
 - **Separate transcript folder:** Keeps outputs organized
 - **Numbered files:** Easy to identify and process sequentially
 - **Naming convention:** `transcript_{audio_prefix}_{story_number}.txt`
+- **Combined transcript (2026-01-09):** `transcript_combined.txt` - Single file with all episodes and clear separators for easy reading
 
 ### 5. Error Handling & User Experience
 - **Graceful degradation:** Script continues without optional components (Java, API keys)
@@ -217,8 +261,8 @@ spanish_helper/
 ## Key Functions & Methods
 
 ### Core Functions
-- `transcribe_audio_file()` - Main processing function
-- `split_by_episode_patterns()` - Pattern-based episode detection
+- `transcribe_audio_file()` - Main processing function (includes combined transcript generation)
+- `split_by_episode_patterns()` - Pattern-based episode detection with duration heuristics (enhanced 2026-01-09)
 - `split_by_english_hints()` - English hint word detection
 - `split_by_content()` - Content-based fallback splitting
 - `identify_speakers_with_audio()` - Audio-based diarization wrapper
@@ -228,6 +272,10 @@ spanish_helper/
 - `proofread_spanish()` - Grammar correction
 - `check_existing_transcripts()` - Find existing transcript files
 - `read_existing_transcripts()` - Read and combine existing files
+- `get_audio_duration()` - Get audio duration using `ffprobe` (added 2026-01-09)
+
+### Utility Scripts
+- `combine_transcripts.py` - Standalone script to combine individual transcript files into single file (added 2026-01-09)
 
 ### Helper Functions
 - `detect_english_hints()` - Find English section markers
@@ -249,11 +297,19 @@ spanish_helper/
 8. **Hybrid approach** - Combining multiple methods
 9. **Smart processing** - Existing file detection and reuse
 10. **Documentation** - Comprehensive guides and setup instructions
+11. **Bug fixes & improvements (2026-01-09)** - Fixed critical bugs in transcription fallback and episode splitting
+12. **Enhanced episode splitting (2026-01-09)** - Added duration heuristics, speaker-based merging, aggressive splitting
+13. **Transcript combination utility (2026-01-09)** - Created `combine_transcripts.py` for unified reading experience
+14. **Security improvements (2026-01-09)** - Removed tokens from documentation, cleaned git history
 
 ### Known Issues & Limitations
 - Java 11 installed but LanguageTool requires Java >= 17
 - torchcodec warnings (non-critical, script still works)
 - Some speaker identification edge cases with rapid dialogue
+- Episode splitting accuracy (2026-01-09): May occasionally split one episode into two or merge two episodes
+  - **Impact:** Minor - users can read through combined transcript to follow content
+  - **Status:** Improved with duration heuristics and speaker detection
+  - **Mitigation:** Combined transcript file makes it easy to read across episode boundaries
 
 ---
 
@@ -262,12 +318,13 @@ spanish_helper/
 ### Potential Improvements
 1. **Better speaker name extraction** - More robust pattern matching
 2. **Episode metadata** - Extract and save episode numbers, titles
-3. **Transcript merging** - Combine multiple audio files into single transcript
+3. **Transcript merging** - Combine multiple audio files into single transcript (partially done via `combine_transcripts.py`)
 4. **Export formats** - Support for SRT, VTT subtitle formats
 5. **Batch processing** - Process multiple files more efficiently
 6. **Configuration file** - YAML/JSON config for settings
 7. **Progress indicators** - Better progress bars for long operations
 8. **Error recovery** - Resume interrupted transcriptions
+9. **Episode splitting refinement** - Further improve accuracy using additional heuristics (speaker voice characteristics, silence detection)
 
 ---
 
@@ -286,6 +343,12 @@ export HUGGINGFACE_TOKEN=hf_...
 python3 transcribe_audio.py
 ```
 
+### Combine Individual Transcripts
+```bash
+# After transcription, combine all episode files into one file
+python3 combine_transcripts.py
+```
+
 ### Check Token Setup
 ```bash
 ./setup_tokens.sh
@@ -300,6 +363,8 @@ python3 transcribe_audio.py
 3. **Requirements:** ffmpeg is mandatory; Java and API keys are optional
 4. **File naming:** Script automatically handles naming; don't manually rename output files
 5. **Existing transcripts:** Script will reuse existing transcripts; delete them to re-transcribe
+6. **Combined transcript:** Use `combine_transcripts.py` to create single file with all episodes for easier reading (2026-01-09)
+7. **Episode splitting:** Uses duration heuristics (2.5-3 min target) and speaker detection; occasional minor errors are acceptable (2026-01-09)
 
 ---
 
@@ -314,6 +379,12 @@ python3 transcribe_audio.py
 
 ---
 
-**Last Updated:** 2026-01-08  
+**Last Updated:** 2026-01-09  
 **Maintainer:** Project owner  
 **Status:** Active development / Production ready
+
+**Recent Updates (2026-01-09):**
+- Fixed critical bugs in transcription fallback and episode splitting
+- Enhanced episode splitting with duration heuristics and speaker-based merging
+- Added `combine_transcripts.py` utility for unified transcript reading
+- Improved security by removing tokens from documentation and git history
