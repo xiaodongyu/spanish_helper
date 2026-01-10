@@ -268,9 +268,10 @@ def split_by_episode_patterns(text, audio_path=None, speaker_segments=None, audi
             # Check next segment
             if i + 1 < len(split_points):
                 next_start = split_points[i + 1]
-                next_end = split_points[i + 2] if i + 2 < len(split_points) else len(text)
                 next_segment_length = next_start - current_start
-                combined_length = next_end - prev_start
+                # Calculate combined length of current segment + next segment only
+                # (not including the segment after next)
+                combined_length = next_start - prev_start
                 
                 # Get speakers for both segments
                 current_seg = text[prev_start:current_start]
@@ -746,6 +747,8 @@ def perform_speaker_diarization_openai(audio_path, openai_api_key=None):
             except Exception as e:
                 # Fallback to whisper-1 if gpt-4o-transcribe-diarize not available
                 print(f"   ⚠️  gpt-4o-transcribe-diarize not available, using whisper-1: {str(e)}")
+                # Reset file pointer to beginning before second attempt
+                audio_file.seek(0)
                 transcript = client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
@@ -1526,9 +1529,12 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
         # Create a mapping from full transcript to story segments
         full_sentences = re.split(r'[.!?]+\s+', corrected_transcript)
         
-        # Save each story
+        # Save each story and prepare combined file content
         saved_files = []
+        combined_content_parts = []
         first_story_preview = None
+        separator = "=" * 80  # 80 '=' characters as separator
+        
         for i, story in enumerate(stories, 1):
             # Extract speaker names for this story
             story_speaker_names = extract_speaker_names(story)
