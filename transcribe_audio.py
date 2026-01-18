@@ -9,6 +9,11 @@ import os
 import sys
 import re
 from pathlib import Path
+
+# Force CPU mode to avoid CUDA compatibility issues
+# This must be set before importing torch/whisper
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 import whisper
 import language_tool_python
 import subprocess
@@ -52,6 +57,109 @@ def proofread_spanish(text, tool):
     except Exception as e:
         print(f"   ⚠️  Warning: Grammar check failed: {str(e)}")
         return text
+
+def transcribe_english_narrator(audio_path, model, start_time=0, duration=10):
+    """
+    Transcribe the beginning of audio in English to capture narrator's section/unit/radio numbers.
+    Returns English transcript of the narrator portion.
+    """
+    try:
+        # Use ffmpeg to extract the first few seconds
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.m4a', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        # Extract first N seconds using ffmpeg
+        subprocess.run(
+            ['ffmpeg', '-i', str(audio_path), '-t', str(duration), 
+             '-acodec', 'copy', '-y', temp_path],
+            capture_output=True,
+            timeout=30
+        )
+        
+        # Transcribe in English
+        result = model.transcribe(temp_path, language="en")
+        english_text = result["text"].strip()
+        
+        # Clean up temp file
+        os.unlink(temp_path)
+        
+        return english_text
+    except Exception as e:
+        print(f"   ⚠️  Warning: Could not transcribe English narrator: {str(e)}")
+        return None
+
+def detect_english_narrator_in_text(text):
+    """
+    Detect English narrator text in transcript (already transcribed, possibly in Spanish).
+    Returns tuple: (english_narrator_text, spanish_text_without_narrator)
+    """
+    # Common English patterns that indicate narrator
+    english_patterns = [
+        r'(?:Section|section|SECTION)\s+\d+',
+        r'(?:Unit|unit|UNIT)\s+\d+',
+        r'(?:Radio|radio|RADIO)\s+\d+',
+        r'(?:Section|section|SECTION)\s+\d+\s+(?:Unit|unit|UNIT)\s+\d+',
+        r'(?:Section|section|SECTION)\s+\d+\s+(?:Unit|unit|UNIT)\s+\d+\s+(?:Radio|radio|RADIO)\s+\d+',
+        r'(?:Section|section|SECTION)\s+\d+\s+(?:Radio|radio|RADIO)\s+\d+',
+        r'\d+\s*(?:st|nd|rd|th)\s+(?:radio|section|unit|part)',
+    ]
+    
+    # Split into sentences
+    sentences = re.split(r'[.!?]+\s+', text)
+    english_sentences = []
+    spanish_sentences = []
+    found_english = False
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        
+        # Check if sentence contains English narrator patterns
+        is_english_narrator = False
+        
+        # Check for English patterns
+        for pattern in english_patterns:
+            if re.search(pattern, sentence, re.IGNORECASE):
+                is_english_narrator = True
+                found_english = True
+                break
+        
+        # Additional check: if sentence is mostly English indicator words
+        if not is_english_narrator:
+            english_words = ['section', 'unit', 'radio', 'part', 'number', 'segment', 
+                           'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth']
+            words = re.findall(r'\b\w+\b', sentence.lower())
+            if words:
+                english_word_count = sum(1 for w in words if w in english_words)
+                # If more than 30% are English indicator words, likely English narrator
+                if english_word_count / len(words) > 0.3:
+                    is_english_narrator = True
+                    found_english = True
+        
+        # Only capture English narrator at the beginning (first few sentences)
+        # Once we see clear Spanish content, stop capturing English
+        if is_english_narrator and len(english_sentences) < 3:
+            english_sentences.append(sentence)
+        else:
+            # If we've found English and now see Spanish, stop checking
+            if found_english and not is_english_narrator:
+                spanish_sentences.append(sentence)
+            elif not found_english:
+                # Haven't found English yet, keep all sentences
+                spanish_sentences.append(sentence)
+            else:
+                # Found English but this might still be English, add to Spanish for now
+                spanish_sentences.append(sentence)
+    
+    english_text = '. '.join(english_sentences) if english_sentences else None
+    spanish_text = '. '.join(spanish_sentences) if spanish_sentences else text
+    
+    if spanish_text and not spanish_text.endswith('.'):
+        spanish_text += '.'
+    
+    return english_text, spanish_text
 
 def detect_english_hints(text):
     """
@@ -180,6 +288,48 @@ def split_by_episode_patterns(text, audio_path=None, speaker_segments=None, audi
     
     # Step 1: Find initial split points using patterns
     split_points = [0]  # Start with beginning
+    
+    # PRIORITY 1: English narrator patterns (strong signal - always indicates new episode)
+    # English narrator typically says "Section X Unit Y Radio Z" or similar
+    # These patterns work even if English was transcribed in Spanish (e.g., "Sección" instead of "Section")
+    english_narrator_patterns = [
+        # English patterns
+        r'(?:Section|section|SECTION)\s+\d+[^.]*\.',
+        r'(?:Section|section|SECTION)\s+\d+\s+(?:Unit|unit|UNIT)\s+\d+[^.]*\.',
+        r'(?:Section|section|SECTION)\s+\d+\s+(?:Unit|unit|UNIT)\s+\d+\s+(?:Radio|radio|RADIO)\s+\d+[^.]*\.',
+        r'(?:Section|section|SECTION)\s+\d+\s+(?:Radio|radio|RADIO)\s+\d+[^.]*\.',
+        r'\d+\s*(?:st|nd|rd|th)\s+(?:radio|section|unit|part)[^.]*\.',
+        # Spanish transcription of English (common when Whisper transcribes English in Spanish mode)
+        r'(?:Sección|sección|SECCIÓN)\s+\d+[^.]*\.',
+        r'(?:Sección|sección|SECCIÓN)\s+\d+\s+(?:Unió|unió|UNIÓ|Unidad|unidad|UNIDAD)\s+\d+[^.]*\.',
+        r'(?:Sección|sección|SECCIÓN)\s+\d+\s+(?:Unió|unió|UNIÓ|Unidad|unidad|UNIDAD)\s+\d+\s+(?:Radio|radio|RADIO)\s+\d+[^.]*\.',
+        r'(?:Sección|sección|SECCIÓN)\s+\d+\s+(?:Radio|radio|RADIO)\s+\d+[^.]*\.',
+    ]
+    
+    for pattern in english_narrator_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            pos = match.start()
+            # English narrator is a strong signal - always add as split point (except at position 0)
+            # Look backwards to find the actual start of the English narrator sentence
+            # English narrator usually appears at the start of a sentence
+            sentence_start = pos
+            # Look for sentence boundary before this position
+            for i in range(max(0, pos - 200), pos):
+                if text[i] in '.!?':
+                    sentence_start = i + 1
+                    # Skip whitespace
+                    while sentence_start < pos and text[sentence_start].isspace():
+                        sentence_start += 1
+                    break
+            
+            if sentence_start > 0:
+                is_new_split = True
+                for existing_split in split_points:
+                    if abs(sentence_start - existing_split) < 50:  # Allow closer splits for English narrator
+                        is_new_split = False
+                        break
+                if is_new_split:
+                    split_points.append(sentence_start)
     
     # Pattern for episode closing (marks end of episode)
     closing_patterns = [
@@ -1089,7 +1239,7 @@ def detect_gender(name):
     
     return None
 
-def identify_speakers(text, speaker_names):
+def identify_speakers(text, speaker_names, is_episode_start=False):
     """
     Identify which speaker is talking for each sentence using episode structure patterns.
     
@@ -1102,6 +1252,12 @@ def identify_speakers(text, speaker_names):
     Refinements:
     - If a sentence contains a question directed at someone by name, that person is NOT the speaker
     - Uses gender information to help identify speakers when available
+    - First four words of an episode are spoken by a third person (narrator), not the main speakers
+    
+    Args:
+        text: The transcript text
+        speaker_names: List of detected speaker names
+        is_episode_start: Whether this is the start of a new episode (for narrator detection)
     
     Returns list of tuples: (sentence, speaker_label)
     """
@@ -1151,6 +1307,10 @@ def identify_speakers(text, speaker_names):
     guest_gender = detect_gender(guest_speaker) if guest_speaker else None
     has_gender_info = main_gender and guest_gender and main_gender != guest_gender
     
+    # Track words for narrator detection (first four words of episode)
+    word_count = 0
+    narrator_words_complete = False
+    
     # Process sentences with structure-aware logic
     last_speaker = None
     
@@ -1161,78 +1321,105 @@ def identify_speakers(text, speaker_names):
         
         speaker_found = None
         
-        # Phase 1: Introduction (before word review) - all main speaker
-        if word_review_marker and i < word_review_marker:
-            speaker_found = main_speaker
+        # Check if first four words are spoken by narrator (third person)
+        if is_episode_start and not narrator_words_complete:
+            words_in_sentence = len(re.findall(r'\b\w+\b', sentence))
+            if word_count + words_in_sentence <= 4:
+                # First four words are narrator
+                speaker_found = "Narrator"
+                word_count += words_in_sentence
+                if word_count >= 4:
+                    narrator_words_complete = True
+            elif word_count < 4:
+                # Partial sentence: first part is narrator, rest is not
+                # Count how many words we need from this sentence
+                words_needed = 4 - word_count
+                # For simplicity, if we need most of the sentence, label as narrator
+                if words_needed >= words_in_sentence * 0.5:
+                    speaker_found = "Narrator"
+                    word_count += words_in_sentence
+                    narrator_words_complete = True
+                else:
+                    # Only first few words are narrator, rest is main speaker
+                    # For simplicity, label entire sentence as narrator if we still need words
+                    speaker_found = "Narrator"
+                    word_count += words_in_sentence
+                    narrator_words_complete = True
         
-        # Phase 2: Word review section - usually main speaker
-        elif word_review_marker and i == word_review_marker:
-            speaker_found = main_speaker
-        
-        # Phase 3: Dialog section (after word review, before closing)
-        elif word_review_marker and i > word_review_marker:
-            # Check if this is closing
-            if re.search(r'Gracias por escuchar|Gracias por acompañarme|Y así termina|Hasta pronto|Hasta la próxima', sentence, re.IGNORECASE):
+        # If narrator detection is complete or not applicable, proceed with normal logic
+        if not speaker_found:
+            # Phase 1: Introduction (before word review) - all main speaker
+            if word_review_marker and i < word_review_marker:
                 speaker_found = main_speaker
-            # Check for self-introduction
-            elif re.search(rf'(?:Soy|soy|Me llamo|me llamo|Mi nombre es|mi nombre es)\s+(\w+)\b', sentence, re.IGNORECASE):
-                match = re.search(rf'(?:Soy|soy|Me llamo|me llamo|Mi nombre es|mi nombre es)\s+(\w+)\b', sentence, re.IGNORECASE)
-                intro_name = match.group(1) if match else None
-                if intro_name in speaker_names:
-                    speaker_found = intro_name
-                else:
-                    # Alternate from last speaker
-                    speaker_found = guest_speaker if last_speaker == main_speaker else main_speaker
-            # IMPORTANT: Check if sentence contains a question directed at someone by name
-            # Pattern: "Name, ¿question" or "Name, question word" - the person being asked is NOT the speaker
-            # Look for: Name followed by comma and question mark/question word (at start or early in sentence)
-            elif any(re.search(rf'(?:^|\s){name},?\s*¿(?:por qué|qué|cómo|cuándo|dónde|cuál|quién)', sentence, re.IGNORECASE) or
-                     re.search(rf'(?:^|\s){name},?\s*¿', sentence, re.IGNORECASE) or
-                     re.search(rf'(?:^|\s){name},?\s*\?', sentence, re.IGNORECASE) or
-                     re.search(rf'(?:^|\s){name},?\s+por qué', sentence, re.IGNORECASE)
-                     for name in speaker_names):
-                # Find which name is being questioned
-                questioned_name = None
-                for name in speaker_names:
-                    if (re.search(rf'(?:^|\s){name},?\s*¿(?:por qué|qué|cómo|cuándo|dónde|cuál|quién)', sentence, re.IGNORECASE) or
-                        re.search(rf'(?:^|\s){name},?\s*¿', sentence, re.IGNORECASE) or
-                        re.search(rf'(?:^|\s){name},?\s*\?', sentence, re.IGNORECASE) or
-                        re.search(rf'(?:^|\s){name},?\s+por qué', sentence, re.IGNORECASE)):
-                        questioned_name = name
-                        break
-                # The person being questioned is NOT the speaker - the other person is speaking
-                if questioned_name:
-                    speaker_found = guest_speaker if questioned_name == main_speaker else main_speaker
-                else:
-                    speaker_found = guest_speaker if last_speaker == main_speaker else main_speaker
-            # Check if addressing someone by name (without question mark)
-            elif re.search(rf'(\w+),?\s+(?:cuéntanos|cuéntame|gracias|por qué|porque)', sentence, re.IGNORECASE):
-                # The person being addressed is NOT the speaker
-                match = re.search(rf'(\w+),?\s+(?:cuéntanos|cuéntame|gracias|por qué|porque)', sentence, re.IGNORECASE)
-                addressed_name = match.group(1) if match else None
-                if addressed_name in speaker_names:
-                    # Other person is speaking
-                    speaker_found = guest_speaker if addressed_name == main_speaker else main_speaker
-                else:
-                    # Alternate
-                    speaker_found = guest_speaker if last_speaker == main_speaker else main_speaker
-            else:
-                # Use gender information if available to refine alternation
-                if has_gender_info and last_speaker:
-                    # Check if sentence contains gender-specific words that might help
-                    # (This is a simple heuristic - could be expanded)
-                    current_gender = detect_gender(last_speaker)
-                    # Alternate to the other speaker
-                    if last_speaker == main_speaker:
-                        speaker_found = guest_speaker if guest_speaker else main_speaker
+            
+            # Phase 2: Word review section - usually main speaker
+            elif word_review_marker and i == word_review_marker:
+                speaker_found = main_speaker
+            
+            # Phase 3: Dialog section (after word review, before closing)
+            elif word_review_marker and i > word_review_marker:
+                # Check if this is closing
+                if re.search(r'Gracias por escuchar|Gracias por acompañarme|Y así termina|Hasta pronto|Hasta la próxima', sentence, re.IGNORECASE):
+                    speaker_found = main_speaker
+                # Check for self-introduction
+                elif re.search(rf'(?:Soy|soy|Me llamo|me llamo|Mi nombre es|mi nombre es)\s+(\w+)\b', sentence, re.IGNORECASE):
+                    match = re.search(rf'(?:Soy|soy|Me llamo|me llamo|Mi nombre es|mi nombre es)\s+(\w+)\b', sentence, re.IGNORECASE)
+                    intro_name = match.group(1) if match else None
+                    if intro_name in speaker_names:
+                        speaker_found = intro_name
                     else:
-                        speaker_found = main_speaker
-                else:
-                    # Alternate between main and guest
-                    if last_speaker == main_speaker:
-                        speaker_found = guest_speaker if guest_speaker else main_speaker
+                        # Alternate from last speaker
+                        speaker_found = guest_speaker if last_speaker == main_speaker else main_speaker
+                # IMPORTANT: Check if sentence contains a question directed at someone by name
+                # Pattern: "Name, ¿question" or "Name, question word" - the person being asked is NOT the speaker
+                # Look for: Name followed by comma and question mark/question word (at start or early in sentence)
+                elif any(re.search(rf'(?:^|\s){name},?\s*¿(?:por qué|qué|cómo|cuándo|dónde|cuál|quién)', sentence, re.IGNORECASE) or
+                         re.search(rf'(?:^|\s){name},?\s*¿', sentence, re.IGNORECASE) or
+                         re.search(rf'(?:^|\s){name},?\s*\?', sentence, re.IGNORECASE) or
+                         re.search(rf'(?:^|\s){name},?\s+por qué', sentence, re.IGNORECASE)
+                         for name in speaker_names):
+                    # Find which name is being questioned
+                    questioned_name = None
+                    for name in speaker_names:
+                        if (re.search(rf'(?:^|\s){name},?\s*¿(?:por qué|qué|cómo|cuándo|dónde|cuál|quién)', sentence, re.IGNORECASE) or
+                            re.search(rf'(?:^|\s){name},?\s*¿', sentence, re.IGNORECASE) or
+                            re.search(rf'(?:^|\s){name},?\s*\?', sentence, re.IGNORECASE) or
+                            re.search(rf'(?:^|\s){name},?\s+por qué', sentence, re.IGNORECASE)):
+                            questioned_name = name
+                            break
+                    # The person being questioned is NOT the speaker - the other person is speaking
+                    if questioned_name:
+                        speaker_found = guest_speaker if questioned_name == main_speaker else main_speaker
                     else:
-                        speaker_found = main_speaker
+                        speaker_found = guest_speaker if last_speaker == main_speaker else main_speaker
+                # Check if addressing someone by name (without question mark)
+                elif re.search(rf'(\w+),?\s+(?:cuéntanos|cuéntame|gracias|por qué|porque)', sentence, re.IGNORECASE):
+                    # The person being addressed is NOT the speaker
+                    match = re.search(rf'(\w+),?\s+(?:cuéntanos|cuéntame|gracias|por qué|porque)', sentence, re.IGNORECASE)
+                    addressed_name = match.group(1) if match else None
+                    if addressed_name in speaker_names:
+                        # Other person is speaking
+                        speaker_found = guest_speaker if addressed_name == main_speaker else main_speaker
+                    else:
+                        # Alternate
+                        speaker_found = guest_speaker if last_speaker == main_speaker else main_speaker
+                else:
+                    # Use gender information if available to refine alternation
+                    if has_gender_info and last_speaker:
+                        # Check if sentence contains gender-specific words that might help
+                        # (This is a simple heuristic - could be expanded)
+                        current_gender = detect_gender(last_speaker)
+                        # Alternate to the other speaker
+                        if last_speaker == main_speaker:
+                            speaker_found = guest_speaker if guest_speaker else main_speaker
+                        else:
+                            speaker_found = main_speaker
+                    else:
+                        # Alternate between main and guest
+                        if last_speaker == main_speaker:
+                            speaker_found = guest_speaker if guest_speaker else main_speaker
+                        else:
+                            speaker_found = main_speaker
         
         # Fallback: If no word review marker, use alternation
         else:
@@ -1256,7 +1443,7 @@ def identify_speakers(text, speaker_names):
     
     return labeled_sentences
 
-def format_transcript_with_speakers(text, speaker_names=None, pre_labeled_sentences=None, audio_path=None, whisper_model=None, hf_token=None):
+def format_transcript_with_speakers(text, speaker_names=None, pre_labeled_sentences=None, audio_path=None, whisper_model=None, hf_token=None, is_episode_start=False):
     """
     Format transcript text with speaker identification.
     - Add proper spacing
@@ -1271,6 +1458,7 @@ def format_transcript_with_speakers(text, speaker_names=None, pre_labeled_senten
         audio_path: Optional path to audio file for audio-based diarization
         whisper_model: Optional Whisper model for word timestamps
         hf_token: Optional HuggingFace token for pyannote models
+        is_episode_start: Whether this is the start of a new episode (for narrator detection)
     """
     # Use pre-labeled sentences if provided, otherwise identify speakers
     if pre_labeled_sentences:
@@ -1279,8 +1467,33 @@ def format_transcript_with_speakers(text, speaker_names=None, pre_labeled_senten
         # Use combined audio + text identification if audio is available
         if audio_path and whisper_model:
             labeled_sentences = identify_speakers_with_audio(text, speaker_names, audio_path, whisper_model, hf_token)
+            # Apply narrator detection to pre-labeled sentences if this is episode start
+            if is_episode_start and labeled_sentences:
+                word_count = 0
+                narrator_words_complete = False
+                updated_labeled_sentences = []
+                for sentence, speaker in labeled_sentences:
+                    if not narrator_words_complete:
+                        words_in_sentence = len(re.findall(r'\b\w+\b', sentence))
+                        if word_count + words_in_sentence <= 4:
+                            updated_labeled_sentences.append((sentence, "Narrator"))
+                            word_count += words_in_sentence
+                            if word_count >= 4:
+                                narrator_words_complete = True
+                        elif word_count < 4:
+                            words_needed = 4 - word_count
+                            if words_needed >= words_in_sentence * 0.5:
+                                updated_labeled_sentences.append((sentence, "Narrator"))
+                                word_count += words_in_sentence
+                                narrator_words_complete = True
+                            else:
+                                updated_labeled_sentences.append((sentence, speaker))
+                                narrator_words_complete = True
+                    else:
+                        updated_labeled_sentences.append((sentence, speaker))
+                labeled_sentences = updated_labeled_sentences
         else:
-            labeled_sentences = identify_speakers(text, speaker_names)
+            labeled_sentences = identify_speakers(text, speaker_names, is_episode_start=is_episode_start)
     else:
         labeled_sentences = None
     
@@ -1343,46 +1556,25 @@ def format_transcript(text):
 
 def check_existing_transcripts(audio_path, output_dir):
     """
-    Check if transcripts already exist for this audio file.
-    Returns list of existing transcript file paths if found, None otherwise.
+    Check if transcript already exists for this audio file.
+    Returns the transcript file path if found, None otherwise.
     """
     prefix = audio_path.stem
-    pattern = f"transcript_{prefix}_*.txt"
-    existing_files = sorted(output_dir.glob(pattern))
+    transcript_filename = f"{prefix}_transcript.txt"
+    transcript_path = output_dir / transcript_filename
     
-    if existing_files:
-        return existing_files
+    if transcript_path.exists():
+        return transcript_path
     return None
 
-def read_existing_transcripts(transcript_files):
+def read_existing_transcript(transcript_path):
     """
-    Read and combine existing transcript files into a single text.
-    Handles both old single-file format and new split-file format.
+    Read existing transcript file.
+    Returns the transcript text content.
     """
-    combined_text = ""
-    for file_path in transcript_files:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            # Remove header lines
-            lines = content.split('\n')
-            transcript_start = 0
-            # Find where the actual transcript starts (after header and separator)
-            for i, line in enumerate(lines):
-                if line.startswith('=' * 10) or (line.startswith('Story') and i < 5):
-                    transcript_start = i + 1
-                    break
-                # Also check for old format: "Transcript from:"
-                if line.startswith('Transcript from:') and i < 3:
-                    transcript_start = i + 2  # Skip header and separator
-                    break
-            
-            # Get the actual transcript text
-            transcript_text = '\n'.join(lines[transcript_start:]).strip()
-            # Remove extra formatting (double newlines between sentences)
-            # But keep the content
-            combined_text += transcript_text + "\n\n"
-    
-    return combined_text.strip()
+    with open(transcript_path, 'r', encoding='utf-8') as f:
+        content = f.read().strip()
+    return content
 
 def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_token=None, openai_api_key=None):
     """
@@ -1397,31 +1589,50 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
     """
     print(f"\n📻 Processing: {audio_path.name}")
     
+    # Initialize variables
+    english_narrator = None
+    has_audio_for_diarization = False
+    
     try:
-        # Check if transcripts already exist
-        existing_transcripts = check_existing_transcripts(audio_path, transcript_dir)
-        has_audio_for_diarization = False
+        # Check if transcript already exists
+        existing_transcript_path = check_existing_transcripts(audio_path, transcript_dir)
         
-        if existing_transcripts:
-            print(f"   📄 Found {len(existing_transcripts)} existing transcript file(s)")
-            print("   Reading existing transcripts...")
-            transcript = read_existing_transcripts(existing_transcripts)
-            print("   ✅ Using existing transcripts (skipping transcription)")
-            # Audio file still available for diarization even if transcript exists
-            has_audio_for_diarization = audio_path.exists() and model is not None
+        if existing_transcript_path:
+            print(f"   📄 Found existing transcript: {existing_transcript_path.name}")
+            print("   ✅ Skipping - transcript already exists")
+            return True
         else:
             # Transcribe the audio
             if model is None:
                 print("   ❌ Error: No model provided and no existing transcripts found")
                 return False
-            print("   Transcribing...")
+            
+            # First, transcribe the beginning in English to capture narrator
+            print("   Transcribing English narrator (beginning)...")
+            english_narrator = transcribe_english_narrator(audio_path, model, start_time=0, duration=10)
+            if english_narrator:
+                print(f"   ✅ English narrator: {english_narrator[:100]}...")
+            
+            # Then transcribe the full audio in Spanish
+            print("   Transcribing Spanish content...")
             result = model.transcribe(str(audio_path), language="es")
             transcript = result["text"]
             has_audio_for_diarization = True
         
-        # Proofread the transcript
+        # Proofread the transcript (only Spanish parts)
         print("   Proofreading...")
-        corrected_transcript = proofread_spanish(transcript, grammar_tool)
+        # Split transcript to proofread only Spanish parts
+        if english_narrator or (transcript and re.search(r'(?:Section|Unit|Radio)\s+\d+', transcript, re.IGNORECASE)):
+            # Extract English narrator and Spanish parts
+            parts = re.split(r'((?:Section|Unit|Radio)\s+\d+[^.]*\.)', transcript, maxsplit=1, flags=re.IGNORECASE)
+            if len(parts) >= 3:
+                english_part = parts[0] + parts[1] if parts[0] or parts[1] else ""
+                spanish_part = ''.join(parts[2:]) if len(parts) > 2 else transcript
+                corrected_transcript = english_part + " " + proofread_spanish(spanish_part, grammar_tool)
+            else:
+                corrected_transcript = proofread_spanish(transcript, grammar_tool)
+        else:
+            corrected_transcript = proofread_spanish(transcript, grammar_tool)
         
         # Extract speaker names from transcript for better identification
         print("   Identifying speakers in transcript...")
@@ -1452,9 +1663,17 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
                     print("   ✅ OpenAI API transcription with speaker diarization successful")
                     print(f"   ✅ OpenAI API diarization: {len(set(s[2] for s in openai_segments if s[2]))} speaker(s) detected")
                     speaker_segments = openai_segments
+                    # Detect and preserve English narrator in OpenAI transcript
+                    detected_english, spanish_part = detect_english_narrator_in_text(openai_transcript)
+                    if detected_english:
+                        openai_transcript = detected_english + " " + spanish_part
                     corrected_transcript = proofread_spanish(openai_transcript, grammar_tool)
                 elif openai_transcript:
                     print("   ✅ OpenAI API transcription successful (no speaker labels)")
+                    # Detect and preserve English narrator in OpenAI transcript
+                    detected_english, spanish_part = detect_english_narrator_in_text(openai_transcript)
+                    if detected_english:
+                        openai_transcript = detected_english + " " + spanish_part
                     corrected_transcript = proofread_spanish(openai_transcript, grammar_tool)
             
             # Fallback to HuggingFace/pyannote if OpenAI didn't provide segments
@@ -1504,7 +1723,39 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
         
         # Process each episode: identify speakers and format
         stories = []
-        for episode in episodes:
+        for episode_idx, episode in enumerate(episodes):
+            # For each episode, transcribe English narrator at the beginning
+            episode_english_narrator = None
+            if has_audio_for_diarization and model:
+                # Transcribe first few seconds in English for narrator
+                try:
+                    # Get episode start time (approximate)
+                    if audio_duration:
+                        chars_per_second = len(corrected_transcript) / audio_duration
+                        # Find where this episode starts in the full transcript
+                        episode_start_char = corrected_transcript.find(episode[:100])
+                        if episode_start_char >= 0:
+                            episode_start_time = episode_start_char / chars_per_second
+                            # Transcribe 5-10 seconds in English
+                            episode_english_narrator = transcribe_english_narrator(
+                                audio_path, model, start_time=episode_start_time, duration=8
+                            )
+                except Exception as e:
+                    pass  # If English transcription fails, continue without it
+            
+            # Also try to detect English narrator in the episode text
+            detected_english, spanish_episode = detect_english_narrator_in_text(episode)
+            
+            # Use separately transcribed English if available, otherwise use detected
+            if episode_english_narrator:
+                # Clean up the English narrator text
+                episode_english_narrator = episode_english_narrator.strip()
+                if episode_english_narrator and not episode_english_narrator.endswith('.'):
+                    episode_english_narrator += '.'
+            elif detected_english:
+                episode_english_narrator = detected_english
+                episode = spanish_episode
+            
             # Extract speaker names for this specific episode
             episode_speaker_names = extract_speaker_names(episode)
             if not episode_speaker_names:
@@ -1515,12 +1766,17 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
             if hints:
                 # Split episode by hints
                 episode_stories = split_by_english_hints(episode, hints)
+                # Add English narrator to first story only
+                if episode_english_narrator and episode_stories:
+                    episode_stories[0] = episode_english_narrator + " " + episode_stories[0]
                 stories.extend(episode_stories)
             else:
-                # Keep episode as single story
+                # Keep episode as single story, prepend English narrator if available
+                if episode_english_narrator:
+                    episode = episode_english_narrator + " " + episode
                 stories.append(episode)
         
-        print(f"   Final split: {len(stories)} story/stories")
+        print(f"   Final split: {len(stories)} episode(s)")
         
         # Extract prefix from audio filename (remove extension)
         prefix = audio_path.stem
@@ -1529,11 +1785,10 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
         # Create a mapping from full transcript to story segments
         full_sentences = re.split(r'[.!?]+\s+', corrected_transcript)
         
-        # Save each story and prepare combined file content
-        saved_files = []
-        combined_content_parts = []
-        first_story_preview = None
+        # Prepare content for single transcript file
+        transcript_content_parts = []
         separator = "=" * 80  # 80 '=' characters as separator
+        first_episode_preview = None
         
         for i, story in enumerate(stories, 1):
             # Extract speaker names for this story
@@ -1564,56 +1819,56 @@ def transcribe_audio_file(audio_path, model, transcript_dir, grammar_tool, hf_to
                 if len(story_labeled_sentences) < len(story_sentences) * 0.5:
                     story_labeled_sentences = None
             
-            # Format the story with speaker labels
+            # Check if story starts with English narrator
+            english_narrator_text = None
+            spanish_story = story
+            
+            # Detect English narrator at the beginning
+            detected_english, spanish_part = detect_english_narrator_in_text(story)
+            if detected_english:
+                english_narrator_text = detected_english
+                spanish_story = spanish_part
+            
+            # Format the Spanish story with speaker labels
+            # Pass is_episode_start=True for each episode to detect narrator (first four words)
             formatted_story = format_transcript_with_speakers(
-                story, 
+                spanish_story, 
                 story_speaker_names,
-                pre_labeled_sentences=story_labeled_sentences
+                pre_labeled_sentences=story_labeled_sentences,
+                is_episode_start=True  # Each episode starts with narrator (first four words)
             )
             
-            # Store first story for preview
+            # Prepend English narrator if found
+            if english_narrator_text:
+                # Format English narrator with [Narrator] label
+                english_narrator_formatted = f"[Narrator]: {english_narrator_text.strip()}"
+                formatted_story = english_narrator_formatted + "\n\n" + formatted_story
+            
+            # Store first episode for preview
             if i == 1:
-                first_story_preview = formatted_story
+                first_episode_preview = formatted_story
             
-            # Create output filename: transcript_{prefix}_{number}.txt
-            output_filename = f"transcript_{prefix}_{i}.txt"
-            output_path = transcript_dir / output_filename
-            
-            # Save story
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(f"Story {i} from: {audio_path.name}\n")
-                f.write("=" * 60 + "\n\n")
-                f.write(formatted_story)
-                f.write("\n")
-            
-            saved_files.append(output_path)
-            print(f"   ✅ Saved story {i}: {output_path.name}")
-            
-            # Prepare content for combined file
             # Add episode separator and content
-            episode_header = f"\n\n{separator}\nEPISODE {i}\n{separator}\n\n"
-            combined_content_parts.append(episode_header + formatted_story)
+            if i > 1:
+                # Add separator before episode (except first one)
+                transcript_content_parts.append(separator)
+            transcript_content_parts.append(formatted_story)
         
-        # Save combined transcript file with all episodes
-        combined_filename = f"transcript_{prefix}_combined.txt"
-        combined_path = transcript_dir / combined_filename
-        with open(combined_path, 'w', encoding='utf-8') as f:
-            # Write header
-            f.write(f"Complete Transcript: {audio_path.name}\n")
-            f.write(f"Total Episodes: {len(stories)}\n")
-            f.write(separator + "\n\n")
-            
+        # Save single transcript file with all episodes
+        # File naming: {audio_filename}_transcript.txt
+        transcript_filename = f"{prefix}_transcript.txt"
+        transcript_path = transcript_dir / transcript_filename
+        
+        with open(transcript_path, 'w', encoding='utf-8') as f:
             # Write all episodes with separators
-            f.write("\n".join(combined_content_parts))
-            
-            # Write footer
-            f.write(f"\n\n{separator}\nEND OF TRANSCRIPT\n{separator}\n")
+            f.write('\n\n'.join(transcript_content_parts))
+            f.write('\n')
         
-        saved_files.append(combined_path)
-        print(f"   ✅ Saved combined transcript: {combined_filename}")
+        print(f"   ✅ Saved transcript: {transcript_filename}")
+        print(f"      Total episodes: {len(stories)}")
         
-        if first_story_preview:
-            print(f"   📝 Preview of story 1:\n{first_story_preview[:200]}...\n")
+        if first_episode_preview:
+            print(f"   📝 Preview of episode 1:\n{first_episode_preview[:200]}...\n")
         
         return True
         

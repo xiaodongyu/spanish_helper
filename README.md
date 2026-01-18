@@ -59,21 +59,21 @@ python transcribe_audio.py
 ### Installation
 
 1. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
 2. **Install ffmpeg:**
-   ```bash
+```bash
    # Linux (Ubuntu/Debian)
-   sudo apt-get install ffmpeg
-   
+sudo apt-get install ffmpeg
+
    # macOS
-   brew install ffmpeg
-   
+brew install ffmpeg
+
    # Windows
-   choco install ffmpeg
-   ```
+choco install ffmpeg
+```
 
 3. **Set up API keys (optional):**
    See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions.
@@ -84,8 +84,8 @@ python transcribe_audio.py
    sudo apt-get install openjdk-17-jdk
    
    # macOS
-   brew install openjdk
-   ```
+brew install openjdk
+```
 
 ---
 

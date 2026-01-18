@@ -66,7 +66,10 @@ spanish_helper/
 - **Question detection:** "Mateo, ¿por qué..." → Mateo is NOT speaking
 
 ### 3. Episode/Story Splitting
-- **Primary:** Pattern-based (fixed episode structures) with duration heuristics
+- **Priority 1:** English narrator patterns (strongest signal - always indicates new episode)
+  - Detects "Section X Unit Y Radio Z" patterns (English or Spanish-transcribed)
+  - English narrator always marks episode boundary
+- **Priority 2:** Pattern-based (fixed episode structures) with duration heuristics
 - **Duration heuristics:** 
   - Target: ~2.5-3 minutes per episode (Duolingo radio format)
   - Min length: ~1.5 minutes (merge if shorter)
@@ -79,9 +82,9 @@ spanish_helper/
 
 ### 4. Smart Processing
 - Checks for existing transcripts before transcribing
-- Reuses existing files to skip transcription
+- Completely skips processing if transcript already exists (no re-processing)
 - Lazy loading: Only loads Whisper model when needed
-- Combined transcript output: Creates single `transcript_combined.txt` file with all episodes and clear separators
+- Single file output: All episodes saved in one `{audio_filename}_transcript.txt` file with '=' separators
 
 ---
 
@@ -118,11 +121,11 @@ export HUGGINGFACE_TOKEN=hf_...       # Get from huggingface.co/settings/tokens
 python3 transcribe_audio.py
 ```
 
-### Combine Individual Transcripts
-```bash
-# After transcription, combine all episode files into one file
-python3 combine_transcripts.py
-```
+### Output Format
+- All episodes from one audio file are saved in a single transcript file
+- File name: `{audio_filename}_transcript.txt`
+- Episodes separated by lines of '=' (80 characters) inside the file
+- No need to combine files - already in single file format
 
 ### Check Token Setup
 ```bash
@@ -150,11 +153,13 @@ echo $HUGGINGFACE_TOKEN  # Check if set
 - `format_transcript_with_speakers()` - Format output with speaker labels
 
 ### Helper Functions
-- `check_existing_transcripts()` - Find existing files
-- `read_existing_transcripts()` - Read and combine existing files
+- `check_existing_transcripts()` - Find existing transcript file
+- `read_existing_transcript()` - Read existing transcript file
 - `proofread_spanish()` - Grammar correction
 - `extract_speaker_names()` - Extract names from dialogue
 - `get_audio_duration()` - Get audio duration using `ffprobe` for episode length calculations
+- `transcribe_english_narrator()` - Transcribe beginning of audio in English (added 2026-01-10)
+- `detect_english_narrator_in_text()` - Detect and separate English narrator from Spanish text (added 2026-01-10)
 
 ---
 
@@ -183,9 +188,9 @@ echo $HUGGINGFACE_TOKEN  # Check if set
    - **Fix:** Set `HUGGINGFACE_TOKEN` (free) or `OPENAI_API_KEY` (paid)
 
 4. **Episode splitting accuracy** - May occasionally split one episode into two or merge two episodes
-   - **Impact:** Minor - users can read through combined transcript to follow content
-   - **Status:** Improved with duration heuristics and speaker detection (2026-01-09)
-   - **Mitigation:** Combined transcript file makes it easy to read across episode boundaries
+   - **Impact:** Minor - users can read through transcript to follow content
+   - **Status:** Significantly improved with English narrator detection as split signal (2026-01-10)
+   - **Mitigation:** Single transcript file with clear separators makes it easy to read across episode boundaries
 
 ---
 
@@ -199,7 +204,28 @@ echo $HUGGINGFACE_TOKEN  # Check if set
 5. Added smart processing → Existing file reuse
 6. Added comprehensive documentation → Setup guides
 
-### 2026-01-09 Updates (Today)
+### 2026-01-10 Updates (Today)
+1. **File output restructuring:**
+   - Removed individual episode file saving
+   - All episodes now saved in single file: `{audio_filename}_transcript.txt`
+   - Episodes separated by '=' lines (80 characters) inside the file
+   - Removed `combine_transcripts.py` (functionality integrated)
+2. **Narrator detection:**
+   - First four words of each episode labeled as `[Narrator]` (third person)
+   - Applied to all episodes automatically
+3. **English narrator support:**
+   - Transcribe beginning of audio separately in English (first 10 seconds)
+   - Preserve English narrator text at beginning of each episode
+   - Labeled as `[Narrator]: {english_text}` before Spanish content
+4. **Episode splitting enhancement:**
+   - English narrator patterns used as Priority 1 split signal (strongest indicator)
+   - Detects both English and Spanish-transcribed English narrator patterns
+   - Significantly improves split accuracy
+5. **Technical improvements:**
+   - Fixed CUDA compatibility (force CPU mode)
+   - Improved skip logic: Completely skip if transcript exists (no re-processing)
+
+### 2026-01-09 Updates
 1. **Bug fixes:**
    - Fixed `audio_file` not being reset before fallback transcription (`audio_file.seek(0)`)
    - Fixed `separator` and `combined_content_parts` initialization issue
@@ -210,16 +236,14 @@ echo $HUGGINGFACE_TOKEN  # Check if set
    - Enhanced speaker-based merging (merges segments with overlapping speakers)
    - Added aggressive splitting for very long episodes (>4 minutes)
 3. **New feature - transcript combination:**
-   - Created `combine_transcripts.py` script to merge individual episode files
-   - Outputs single `transcript_combined.txt` with clear episode separators
-   - Removes headers from individual files for cleaner output
+   - Created `combine_transcripts.py` script to merge individual episode files (removed 2026-01-10)
 4. **Security improvements:**
    - Removed actual API tokens from documentation files
    - Replaced with placeholders in all commits (history cleaned via `git filter-branch`)
 
 ### Current Implementation
-- **File size:** transcribe_audio.py (complex, feature-rich with duration heuristics)
-- **New script:** combine_transcripts.py (transcript combination utility)
+- **File size:** transcribe_audio.py (~1,900+ lines, feature-rich with English narrator support)
+- **Output format:** Single transcript file per audio with episodes separated by '=' lines
 - **Dependencies:** All major features implemented
 - **Documentation:** Comprehensive (README, SETUP_GUIDE, API_COMPARISON)
 
@@ -251,5 +275,12 @@ echo $HUGGINGFACE_TOKEN  # Check if set
 
 ---
 
-**Last Updated:** 2026-01-09  
+**Last Updated:** 2026-01-10  
 **Use Case:** Personal Spanish learning tool for Duolingo radio transcripts
+
+**Key Features (2026-01-10):**
+- Single file output per audio (all episodes in one file)
+- English narrator transcription and preservation
+- Narrator detection (first four words of each episode)
+- English narrator as episode split signal
+- Improved skip logic for existing transcripts
